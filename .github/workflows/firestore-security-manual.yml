@@ -1,0 +1,125 @@
+name: Firestore - securite et non-regression (developpement)
+
+on:
+  push:
+    branches:
+      - developpement-coach
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    env:
+      CI: 'true'
+      FIREBASE_CLI_DISABLE_UPDATE_CHECK: 'true'
+      FIREBASE_CLI_EXPERIMENTS: ''
+    steps:
+      - name: Refuser toute autre branche ou evenement
+        shell: bash
+        run: |
+          case "$GITHUB_EVENT_NAME" in
+            push|workflow_dispatch) ;;
+            *) exit 1 ;;
+          esac
+          test "$GITHUB_REF" = refs/heads/developpement-coach
+
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+          fetch-depth: 1
+
+      - name: Verifier le commit et la branche de la copie temporaire
+        shell: bash
+        run: |
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          git checkout -B developpement-coach "$GITHUB_SHA"
+          mkdir -p test-results
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+
+      - name: Installer les outils uniquement dans le runner temporaire
+        id: dependencies
+        working-directory: tests
+        run: npm install --ignore-scripts --no-audit --no-fund
+
+      - name: Verifier le workflow et les preconditions
+        id: config
+        run: node tests/ci/check-workflow.mjs
+
+      - name: Afficher les versions reellement installees
+        working-directory: tests
+        shell: bash
+        run: |
+          set -o pipefail
+          { node --version; java --version; npm ls --depth=0; } 2>&1 | tee ../test-results/tool-versions.log
+
+      - name: Controles statiques des regles (pas une validation moteur)
+        id: static
+        shell: pwsh
+        run: ./tests/firestore/check-preparation.ps1
+
+      - name: Executer les 24 scenarios dans Firestore Emulator
+        id: firestore
+        if: ${{ !cancelled() && steps.config.outcome == 'success' }}
+        working-directory: tests
+        shell: bash
+        run: |
+          set -o pipefail
+          ./node_modules/.bin/firebase emulators:exec --non-interactive --project demo-objectif-5-tractions --config firestore/firebase.json --only firestore 'node --test --test-concurrency=1 --test-reporter=tap firestore/security.test.mjs' 2>&1 | tee ../test-results/firestore.log
+
+      - name: Installer Chromium dans le runner temporaire
+        id: browser
+        if: ${{ !cancelled() && steps.dependencies.outcome == 'success' }}
+        working-directory: tests
+        run: ./node_modules/.bin/playwright install --with-deps chromium
+
+      - name: Non-regression et modules simules dans Chromium
+        id: regression
+        if: ${{ !cancelled() && steps.browser.outcome == 'success' }}
+        shell: bash
+        run: |
+          set -o pipefail
+          node tests/ci/run-browser-tests.mjs 2>&1 | tee test-results/browser.log
+
+      - name: Resume explicite
+        if: ${{ always() }}
+        env:
+          CONFIG: ${{ steps.config.outcome }}
+          STATIC: ${{ steps.static.outcome }}
+          FIRESTORE: ${{ steps.firestore.outcome }}
+          REGRESSION: ${{ steps.regression.outcome }}
+        shell: bash
+        run: |
+          {
+            echo '## Verification Firestore et application'
+            echo "Commit : $GITHUB_SHA"
+            echo "Configuration : $CONFIG"
+            echo "Controles statiques : $STATIC (ne prouvent pas la securite)"
+            echo "Moteur Firestore, 24 scenarios attendus : $FIRESTORE"
+            echo "Chromium, 24 groupes attendus : $REGRESSION"
+            echo 'Consulter les journaux pour le nombre reel de tests executes. Un echec de compilation ne signifie pas que les 24 scenarios ont ete executes.'
+            echo 'Aucun deploiement ni compte reel ; projet demo uniquement.'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - uses: actions/upload-artifact@v4
+        if: ${{ always() }}
+        with:
+          name: verification-firestore-${{ github.run_id }}
+          path: |
+            test-results/
+            tests/*debug.log
+            tests/firestore/*debug.log
+            tests/package-lock.json
+          if-no-files-found: warn
+          retention-days: 7

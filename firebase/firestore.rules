@@ -1,0 +1,121 @@
+// BROUILLON LOCAL — ne pas publier avant validation dans Emulator Suite.
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    function verified() {
+      return request.auth != null
+        && request.auth.token.keys().hasAll(['email_verified'])
+        && request.auth.token.email_verified == true;
+    }
+    function designatedCoach(uid) {
+      return exists(/databases/$(database)/documents/settings/access)
+        && get(/databases/$(database)/documents/settings/access).data.keys().hasAll(['coachUid', 'active'])
+        && get(/databases/$(database)/documents/settings/access).data.coachUid is string
+        && get(/databases/$(database)/documents/settings/access).data.coachUid.size() > 0
+        && get(/databases/$(database)/documents/settings/access).data.coachUid.size() <= 128
+        && get(/databases/$(database)/documents/settings/access).data.active is bool
+        && get(/databases/$(database)/documents/settings/access).data.coachUid == uid;
+    }
+    function coach() {
+      return verified()
+        && designatedCoach(request.auth.uid)
+        && get(/databases/$(database)/documents/settings/access).data.active == true
+        && get(/databases/$(database)/documents/settings/access).data.coachUid == request.auth.uid;
+    }
+    function enrolled(uid) {
+      return exists(/databases/$(database)/documents/athletes/$(uid))
+        && get(/databases/$(database)/documents/athletes/$(uid)).data.keys().hasAll(['enrolled'])
+        && get(/databases/$(database)/documents/athletes/$(uid)).data.enrolled == true;
+    }
+    function owner(uid) {
+      return verified() && request.auth.uid == uid && enrolled(uid);
+    }
+    function assigned(uid) {
+      return coach() && enrolled(uid)
+        && exists(/databases/$(database)/documents/coaches/$(request.auth.uid)/athletes/$(uid))
+        && get(/databases/$(database)/documents/coaches/$(request.auth.uid)/athletes/$(uid)).data.keys().hasAll(['status'])
+        && get(/databases/$(database)/documents/coaches/$(request.auth.uid)/athletes/$(uid)).data.status == 'active';
+    }
+    function canRead(uid) {
+      return owner(uid) || assigned(uid);
+    }
+    function validUpdatedAt() {
+      return request.resource.data.updatedAt is timestamp
+        && request.resource.data.updatedAt == request.time
+        && (request.method == 'create'
+          || (resource.data.keys().hasAll(['updatedAt'])
+            && resource.data.updatedAt is timestamp && request.time >= resource.data.updatedAt));
+    }
+    function validRevision() {
+      return request.resource.data.revision is int && request.resource.data.revision >= 1
+        && validUpdatedAt()
+        && ((request.method == 'create' && request.resource.data.revision == 1)
+          || (request.method == 'update' && resource.data.keys().hasAll(['revision'])
+            && resource.data.revision is int && resource.data.revision >= 1
+            && request.resource.data.revision == resource.data.revision + 1));
+    }
+    function validSessionId(id) {
+      return id in ['1', '2', '3', '4', '5', '6', '7', '8', '9', '10', '11', '12'];
+    }
+    function validProgram() {
+      let d = request.resource.data;
+      return d.keys().hasAll(['schemaVersion', 'score', 'notes', 'revision', 'updatedAt'])
+        && d.keys().hasOnly(['schemaVersion', 'score', 'notes', 'revision', 'updatedAt'])
+        && d.schemaVersion is int && d.schemaVersion == 1
+        && (d.score == null || (d.score is int && d.score >= 0 && d.score <= 30))
+        && d.notes is string && d.notes.size() <= 20000
+        && validRevision();
+    }
+    function validSession() {
+      let d = request.resource.data;
+      return d.keys().hasAll(['completed', 'completedAt', 'revision', 'updatedAt'])
+        && d.keys().hasOnly(['completed', 'completedAt', 'revision', 'updatedAt'])
+        && d.completed is bool
+        && (d.completedAt == null || (d.completedAt is timestamp && d.completedAt <= request.time))
+        && (d.completed || d.completedAt == null)
+        && validRevision();
+    }
+    function validProfile() {
+      let d = request.resource.data;
+      return d.keys().hasAll(['displayName', 'updatedAt'])
+        && d.keys().hasOnly(['displayName', 'updatedAt'])
+        && d.displayName is string && d.displayName.size() <= 100
+        && validUpdatedAt();
+    }
+
+    // Configuration et invitations : accès interne des règles/Admin uniquement.
+    match /settings/{id} { allow read, write: if false; }
+    match /invitations/{id} { allow read, write: if false; }
+
+    match /users/{uid} {
+      allow get: if canRead(uid) || (coach() && request.auth.uid == uid);
+      allow create, update: if (owner(uid) || (coach() && request.auth.uid == uid)) && validProfile();
+      allow list, delete: if false;
+    }
+    match /coaches/{coachUid}/athletes/{athleteUid} {
+      allow get: if (coach() && request.auth.uid == coachUid)
+        || (owner(athleteUid) && designatedCoach(coachUid));
+      allow list: if coach() && request.auth.uid == coachUid;
+      allow write: if false;
+    }
+    // Admission immuable pour les clients, distincte d'une relation révocable.
+    match /athletes/{uid} {
+      allow get: if canRead(uid);
+      allow list, write: if false;
+      match /programs/{programId} {
+        allow get: if programId == 'tractions-12-v1' && canRead(uid);
+        allow create, update: if programId == 'tractions-12-v1' && owner(uid) && validProgram();
+        allow list, delete: if false;
+        match /sessions/{sessionId} {
+          // Une liste doit contraindre documentId() aux 12 ID autorisés.
+          allow get, list: if programId == 'tractions-12-v1' && validSessionId(sessionId) && canRead(uid);
+          allow create, update: if programId == 'tractions-12-v1'
+            && validSessionId(sessionId) && owner(uid) && validSession();
+          allow delete: if false;
+        }
+      }
+    }
+    // Aucun accès implicite aux imports, sous-collections ou chemins inconnus.
+    match /{document=**} { allow read, write: if false; }
+  }
+}

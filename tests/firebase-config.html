@@ -1,0 +1,79 @@
+<!doctype html><meta charset="utf-8"><title>Tests préparation Firebase</title>
+<pre id="results">Tests en cours…</pre>
+<script type="module">
+// TEST_SOURCES
+const decode=s=>new TextDecoder().decode(Uint8Array.from(atob(s),c=>c.charCodeAt(0)));
+const source=decode(SOURCES.module),results=[];
+function assert(value,message){if(!value)throw Error(message)}
+async function test(name,run){try{await run();results.push('PASS '+name)}catch(e){results.push('FAIL '+name+': '+e.message)}}
+async function expectCode(action,code){
+ try{await action()}catch(error){assert(error.code===code,'code reçu : '+error.code);return}
+ throw Error('rejet attendu : '+code);
+}
+const url=URL.createObjectURL(new Blob([source],{type:'text/javascript'}));
+try{
+ const m=await import(url);
+ const config={apiKey:'test-only-key',authDomain:'example.invalid',projectId:'objectif-5-tractions',appId:'test-only-app'};
+ function fakeSdk(){
+  const apps=[];let calls=0;
+  return {apps,get calls(){return calls},getApps:()=>apps,initializeApp(options,name){calls++;const app={options,name};apps.push(app);return app}};
+ }
+ await test('Module ES valide, configuration officielle et absence de couplage applicatif',async()=>{
+  assert(Object.isFrozen(m.firebaseConfig),'configuration mutable');
+  assert(m.FIREBASE_APP_SDK_URL==='https://www.gstatic.com/firebasejs/13.1.0/firebase-app.js','CDN/version');
+  assert(m.firebaseConfig.projectId==='objectif-5-tractions'&&m.firebaseConfig.authDomain==='objectif-5-tractions.firebaseapp.com','projet/domaine');
+  assert(m.firebaseConfig.appId==='1:90002170931:web:07ca95c598402824dc6f46','appId');
+  assert(m.firebaseConfig.storageBucket==='objectif-5-tractions.firebasestorage.app'&&m.firebaseConfig.messagingSenderId==='90002170931','champs supplémentaires');
+  assert(m.firebaseConfig.apiKey==='AIzaSyBReeDylRA4uBhuEG24uKvlgaysEnWSzq0','clé Web');
+  const html=decode(SOURCES.index),sw=decode(SOURCES.sw);
+  assert(!html.includes('firebase-config')&&!html.includes('gstatic.com'),'module chargé par application');
+  assert(!sw.includes('firebase-config'),'worker modifié pour Firebase');
+  assert(!/localStorage|sessionStorage|firebase-auth|firebase-firestore|signIn|createUser|signOut|getAuth|getFirestore|analytics/i.test(source),'effet de bord non autorisé');
+ });
+ await test('Validation avant tout chargement SDK',async()=>{
+  let loads=0;const loadSdk=()=>{loads++;throw Error('interdit')};
+  for(const bad of [{},{...config,apiKey:''},{...config,appId:42},{...config,authDomain:' '},{...config,projectId:'autre'}]){
+   await expectCode(m.createFirebaseInitializer({config:bad,loadSdk}),'firebase/config-incomplete');
+  }
+  assert(loads===0,'SDK chargé avec configuration invalide');
+ });
+ await test('Configuration officielle transmise intégralement au SDK simulé',async()=>{
+  const sdk=fakeSdk();let loads=0;
+  const init=m.createFirebaseInitializer({loadSdk:async()=>{loads++;return sdk}});
+  assert(loads===0,'chargement implicite');
+  const app=await init();
+  assert(Object.keys(m.firebaseConfig).length===6,'nombre de paramètres');
+  for(const [key,value] of Object.entries(m.firebaseConfig))assert(app.options[key]===value,'paramètre perdu : '+key);
+  assert(await init()===app&&loads===1&&sdk.calls===1,'doublon');
+ });
+ await test('Initialisation explicite, appels concurrents et réutilisation',async()=>{
+  const sdk=fakeSdk();let loads=0;
+  const init=m.createFirebaseInitializer({config,loadSdk:async()=>{loads++;return sdk}});
+  assert(loads===0&&sdk.calls===0,'initialisation automatique');
+  const p=init();assert(init()===p,'promesses concurrentes différentes');
+  const app=await p;assert(await init()===app&&loads===1&&sdk.calls===1,'doublon');
+  const second=m.createFirebaseInitializer({config,loadSdk:async()=>sdk});
+  assert(await second()===app&&sdk.calls===1,'instance existante ignorée');
+ });
+ await test('Configuration copiée et conflit sans écrasement',async()=>{
+  const sdk=fakeSdk(),original={...config};
+  const first=m.createFirebaseInitializer({config:original,loadSdk:async()=>sdk});
+  original.apiKey='mutation';const app=await first();assert(app.options.apiKey===config.apiKey,'mutation externe');
+  await expectCode(m.createFirebaseInitializer({config:{...config,apiKey:'different'},loadSdk:async()=>sdk}),'firebase/config-conflict');
+  assert(sdk.calls===1&&sdk.apps[0]===app,'instance écrasée');
+ });
+ await test('Erreur CDN/réseau et reprise sur appel explicite',async()=>{
+  const sdk=fakeSdk();let attempts=0;
+  const init=m.createFirebaseInitializer({config,loadSdk:async()=>{if(++attempts===1)throw TypeError('offline');return sdk}});
+  await expectCode(init,'firebase/sdk-load-failed');assert(attempts===1,'reprise automatique');
+  assert(await init()===sdk.apps[0]&&attempts===2,'reprise impossible');
+ });
+ await test('SDK incompatible et erreur initialiseApp identifiables',async()=>{
+  for(const sdk of [undefined,{}, {getApps(){}}]){
+   await expectCode(m.createFirebaseInitializer({config,loadSdk:async()=>sdk}),'firebase/sdk-load-failed');
+  }
+  await expectCode(m.createFirebaseInitializer({config,loadSdk:async()=>({getApps:()=>[],initializeApp(){throw Error('failure')}})}),'firebase/init-failed');
+ });
+}catch(e){results.push('FAIL module : '+e.stack)}finally{URL.revokeObjectURL(url)}
+document.getElementById('results').textContent=results.join('\n')+'\n'+(results.some(r=>r.startsWith('FAIL'))?'FAILED':'ALL PASSED');
+</script>

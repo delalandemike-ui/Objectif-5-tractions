@@ -1,0 +1,114 @@
+<!doctype html><meta charset="utf-8"><title>Tests Auth simulés</title>
+<pre id="results">Tests en cours…</pre>
+<script type="module">
+// TEST_SOURCES
+const decode=s=>new TextDecoder().decode(Uint8Array.from(atob(s),c=>c.charCodeAt(0)));
+const source=decode(SOURCES.module),results=[];
+function assert(value,message){if(!value)throw Error(message)}
+async function test(name,run){try{await run();results.push('PASS '+name)}catch(e){results.push('FAIL '+name+': '+e.message)}}
+async function expectCode(action,code){try{await action()}catch(e){assert(e.code===code,'code reçu : '+e.code);return e}throw Error('rejet attendu : '+code)}
+const url=URL.createObjectURL(new Blob([source],{type:'text/javascript'}));
+try{
+ const m=await import(url);
+ const email='coach@example.invalid';
+ const link='https://delalandemike-ui.github.io/Objectif-5-tractions/?apiKey=test-key&mode=signIn&oobCode=test-code';
+ function fixture(){
+  const calls={load:0,init:0,send:0,complete:0,out:0,unsub:0},auth={currentUser:null};let change,observerError;
+  const sdk={inMemoryPersistence:{type:'NONE'},
+   initializeAuth(app,options){calls.init++;assert(options.persistence===sdk.inMemoryPersistence,'persistance incorrecte');return auth},
+   async sendSignInLinkToEmail(a,e,settings){calls.send++;calls.sent={a,e,settings}},
+   isSignInWithEmailLink:(a,l)=>new URL(l).searchParams.get('mode')==='signIn',
+   async signInWithEmailLink(a,e,l){calls.complete++;calls.completed={a,e,l};auth.currentUser={uid:'uid-test',email:e,emailVerified:true,token:'not-exposed'};change?.(auth.currentUser);return {user:auth.currentUser}},
+   async signOut(){calls.out++;auth.currentUser=null;change?.(null)},
+   onAuthStateChanged(a,cb,err){change=cb;observerError=err;cb(a.currentUser);return ()=>{calls.unsub++;change=null}}
+  };
+  const load=async()=>{calls.load++;return {sdk,app:{options:{apiKey:'test-key'}},auth}};
+  return {sdk,auth,calls,load,client:m.createAuthClient({load}),emitError:e=>observerError(e)};
+ }
+ await test('Import inactif et absence de couplage/stockage/privilège',()=>{
+  const html=decode(SOURCES.index),sw=decode(SOURCES.sw);
+  assert(!html.includes('auth.js')&&!sw.includes('auth.js'),'module intégré');
+  assert(!/localStorage|sessionStorage|tractions-v2|firebase-firestore|setCustomUserClaims|createUserWith|signInAnonymously|console\./.test(source),'effet interdit');
+  assert(typeof m.authClient.sendSignInLink==='function','client manquant');
+  assert(m.AUTH_RETURN_URL==='https://delalandemike-ui.github.io/Objectif-5-tractions/','URL retour');
+ });
+ await test('Initialisation volontaire unique et persistance mémoire',async()=>{
+  const f=fixture();assert(f.calls.load===0,'chargement automatique');
+  await Promise.all([f.client.initialize(),f.client.initialize()]);
+  assert(f.calls.load===1&&f.calls.init===1&&!f.calls.send&&!f.calls.complete,'initialisation doublée ou connexion automatique');
+ });
+ await test('Envoi uniquement explicite, URL fixe et adresse non stockée',async()=>{
+  const f=fixture();await f.client.sendSignInLink(' '+email+' ');
+  assert(f.calls.send===1&&f.calls.sent.e===email,'adresse');
+  assert(f.calls.sent.settings.url===m.AUTH_RETURN_URL&&f.calls.sent.settings.handleCodeInApp===true,'paramètres');
+  assert(!f.calls.complete,'connexion à l’envoi');
+ });
+ await test('Adresse obligatoire et liens étrangers/ambigus rejetés avant chargement',async()=>{
+  const f=fixture();
+  for(const address of ['',null,'a@','a b@example.invalid'])await expectCode(()=>f.client.sendSignInLink(address),'auth/invalid-email');
+  await expectCode(()=>f.client.completeSignIn('',link+'&email='+email),'auth/invalid-email');
+  for(const value of ['cassé',link.replace('https:','http:'),link.replace('delalandemike-ui.github.io','evil.invalid'),link.replace('/Objectif-5-tractions/','/autre/'),link+'&mode=signIn',link.replace('https://','https://user@')]){
+   await expectCode(()=>f.client.completeSignIn(email,value),'auth/invalid-action-code');
+  }
+  assert(f.calls.load===0&&f.calls.send===0&&f.calls.complete===0,'effet avant validation');
+ });
+ await test('Finalisation explicite, clé/projet et nature du lien contrôlés',async()=>{
+  const f=fixture();
+  await expectCode(()=>f.client.completeSignIn(email,link.replace('test-key','wrong-key')),'auth/invalid-action-code');
+  await expectCode(()=>f.client.completeSignIn(email,link.replace('mode=signIn','mode=resetPassword')),'auth/invalid-action-code');
+  assert(f.calls.complete===0,'lien incorrect consommé');
+  const user=await f.client.completeSignIn(email,link);
+  assert(user.uid==='uid-test'&&user.emailVerified&&Object.isFrozen(user),'identité');
+  assert(!('token' in user)&&!('role' in user),'privilège/jeton exposé');
+  assert(f.calls.completed.e===email,'adresse injectée');
+ });
+ await test('Observation, erreurs et désabonnement sans envoi',async()=>{
+  const f=fixture(),events=[],errors=[];
+  const off=await f.client.observe(u=>events.push(u),e=>errors.push(e));
+  assert(events[0]===null&&!f.calls.send&&!f.calls.complete,'session initiale');
+  await f.client.completeSignIn(email,link);assert(events[1].uid==='uid-test','connexion non observée');
+  f.emitError({code:'auth/network-request-failed'});assert(errors[0].code==='auth/network-request-failed','erreur observation');
+  await f.client.signOut();assert(events[2]===null&&f.auth.currentUser===null,'déconnexion');
+  off();assert(f.calls.unsub===1,'désabonnement');
+  await expectCode(()=>f.client.observe(()=>{}),'auth/invalid-observer');
+ });
+ await test('Liens expirés, invalides/réutilisés, compte désactivé et quotas',async()=>{
+  for(const code of ['auth/expired-action-code','auth/invalid-action-code','auth/invalid-credential','auth/user-disabled','auth/too-many-requests']){
+   const f=fixture();f.sdk.signInWithEmailLink=async()=>{f.calls.complete++;throw {code,message:email+' secret'}};
+   const error=await expectCode(()=>f.client.completeSignIn(email,link),code);
+   assert(!error.message.includes(email)&&!('cause' in error),'erreur sensible');
+   assert(f.calls.complete===1&&f.calls.send===0,'reprise automatique');
+  }
+ });
+ await test('Double clic et déconnexion pendant une connexion bloqués',async()=>{
+  const f=fixture();let release,started;
+  const ready=new Promise(resolve=>started=resolve);
+  f.sdk.signInWithEmailLink=async()=>{started();await new Promise(resolve=>release=resolve);return {user:{uid:'late'}}};
+  const pending=f.client.completeSignIn(email,link);await ready;
+  await expectCode(()=>f.client.completeSignIn(email,link),'auth/busy');
+  await expectCode(()=>f.client.sendSignInLink(email),'auth/busy');
+  await expectCode(()=>f.client.signOut(),'auth/busy');
+  release();await pending;await f.client.signOut();assert(f.calls.out===1,'reprise après opération');
+ });
+ await test('Interruption réseau : pas de renvoi ni perte du résultat Auth observé',async()=>{
+  const f=fixture(),events=[];await f.client.observe(u=>events.push(u),()=>{});
+  const complete=f.sdk.signInWithEmailLink;
+  f.sdk.signInWithEmailLink=async(...args)=>{await complete(...args);throw {code:'auth/network-request-failed'}};
+  await expectCode(()=>f.client.completeSignIn(email,link),'auth/network-request-failed');
+  assert(events.at(-1)?.uid==='uid-test'&&f.calls.send===0,'état final ignoré');
+  await f.client.signOut();assert(events.at(-1)===null,'déconnexion après interruption');
+  f.sdk.sendSignInLinkToEmail=async()=>{f.calls.send++;throw {code:'auth/network-request-failed'}};
+  await expectCode(()=>f.client.sendSignInLink(email),'auth/network-request-failed');assert(f.calls.send===1,'renvoi automatique');
+ });
+ await test('Échec de chargement, SDK incorrect, initialisation et reprise explicite',async()=>{
+  const f=fixture();let attempts=0;
+  const client=m.createAuthClient({load:async()=>{if(++attempts===1)throw Error('offline');return f.load()}});
+  await expectCode(()=>client.initialize(),'auth/sdk-load-failed');assert(attempts===1,'reprise automatique');
+  await client.initialize();assert(attempts===2,'reprise impossible');
+  await expectCode(()=>m.createAuthClient({load:async()=>({sdk:{}})}).initialize(),'auth/sdk-load-failed');
+  f.sdk.initializeAuth=()=>{throw {code:'auth/already-initialized'}};
+  await expectCode(()=>m.createAuthClient({load:f.load}).initialize(),'auth/already-initialized');
+ });
+}catch(e){results.push('FAIL module : '+e.stack)}finally{URL.revokeObjectURL(url)}
+document.getElementById('results').textContent=results.join('\n')+'\n'+(results.some(r=>r.startsWith('FAIL'))?'FAILED':'ALL PASSED');
+</script>

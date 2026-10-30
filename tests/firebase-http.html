@@ -1,0 +1,23 @@
+<!doctype html><meta charset="utf-8"><title>Initialisation Firebase HTTP isolée</title>
+<pre id="results">Test HTTP en cours…</pre>
+<script type="module">
+// Page de test dédiée, jamais chargée par l'application. Aucun SDK Auth/Firestore.
+const output=document.getElementById('results');
+function assert(value,message){if(!value)throw Error(message)}
+try{
+  assert(location.protocol==='http:'&&location.hostname==='127.0.0.1','HTTP local requis');
+  const module=await import('../js/firebase-config.js');
+  assert(!performance.getEntriesByType('resource').some(e=>e.name.startsWith('https://www.gstatic.com/firebasejs/')),'chargement SDK avant appel explicite');
+  const first=module.initializeFirebase();
+  assert(module.initializeFirebase()===first,'promesses concurrentes différentes');
+  const app=await first;
+  const sdk=await import(module.FIREBASE_APP_SDK_URL);
+  assert(sdk.SDK_VERSION===module.FIREBASE_SDK_VERSION,'version SDK');
+  assert(sdk.getApps().length===1&&sdk.getApps()[0]===app,'instance dupliquée');
+  assert(await module.initializeFirebase()===app,'instance non réutilisée');
+  for(const [key,value] of Object.entries(module.firebaseConfig))assert(app.options[key]===value,'configuration différente : '+key);
+  const resources=performance.getEntriesByType('resource').map(e=>e.name);
+  assert(!resources.some(url=>/firebase-auth|firebase-firestore|identitytoolkit|securetoken|firestore.googleapis.com/.test(url)),'ressource Auth/Firestore inattendue');
+  output.textContent='PASS Import HTTP local sans chargement SDK implicite\nPASS Chargement réel CDN Firebase '+sdk.SDK_VERSION+'\nPASS Initialisation explicite, configuration et instance unique\nPASS Aucun SDK Auth/Firestore chargé\nALL PASSED';
+}catch(error){output.textContent='FAIL '+(error.code||error.name)+': '+error.message+'\nFAILED'}
+</script>

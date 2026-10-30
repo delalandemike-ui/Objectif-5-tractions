@@ -1,0 +1,111 @@
+<!doctype html><meta charset="utf-8"><title>Tests locaux</title>
+<pre id="results">Tests en cours…</pre>
+<script>
+// TEST_SOURCES
+// Sources injectées par run-tests.ps1 ; aucune dépendance ni donnée utilisateur.
+const decode=s=>new TextDecoder().decode(Uint8Array.from(atob(s),c=>c.charCodeAt(0)));
+const results=[];
+function assert(value,message){if(!value)throw Error(message)}
+async function test(name,run){try{await run();results.push('PASS '+name)}catch(e){results.push('FAIL '+name+': '+e.message)}}
+async function app(raw=null,options={}){
+ const frame=document.createElement('iframe');document.body.append(frame);
+ const setup=`<script>
+ window.testStore={raw:${JSON.stringify(raw)},writes:0,downloads:0,blobs:[]};
+ Object.defineProperty(window,'localStorage',{value:{getItem(){if(${!!options.readError})throw Error('blocked');return testStore.raw},setItem(k,v){if(k!=='tractions-v2')throw Error('key');if(${!!options.writeError})throw Error('quota');testStore.raw=v;testStore.writes++}}});
+ URL.createObjectURL=b=>{testStore.blobs.push(b);return 'blob:test'};URL.revokeObjectURL=()=>{};
+ HTMLAnchorElement.prototype.click=function(){testStore.downloads++};
+ Object.defineProperty(navigator,'serviceWorker',{value:{register:()=>Promise.resolve()}});
+ <\/script>`;
+ await new Promise(resolve=>{frame.onload=resolve;frame.srcdoc=decode(SOURCES.index).replace('<script>',setup+'<script>')});
+ return {w:frame.contentWindow,d:frame.contentDocument,store:frame.contentWindow.testStore,close:()=>frame.remove()};
+}
+async function main(){
+ await test('Programme, échauffement et consignes identiques au HEAD',()=>{
+  const current=decode(SOURCES.index),baseline=decode(SOURCES.baseline);
+  const sessions=s=>s.match(/const S=\[[\s\S]*?\n\];/)[0];
+  assert(sessions(current)===sessions(baseline),'programme changé');
+  for(const heading of ['🔥 Échauffement','💡 Consignes']){
+   const section=s=>s.slice(s.indexOf('<section class="card"><h2>'+heading)).split('</section>')[0];
+   assert(section(current)===section(baseline),'section changée '+heading);
+  }
+  assert(decode(SOURCES.sw).trimEnd()===decode(SOURCES.baselineSw).trimEnd(),'sw.js changé');
+ });
+ await test('12 séances : ouverture, validation sans doublon, progression, réinitialisation individuelle',async()=>{
+  const a=await app();try{
+   assert(a.store.writes===0&&a.store.downloads===0,'effet au démarrage');
+   for(let id=1;id<=12;id++){
+    a.w.selectS(Math.ceil(id/3),id);assert(a.d.getElementById('session').value==id,'sélection');
+    assert(a.d.getElementById('detail').textContent.includes('Séance '+id),'détail');
+    a.d.getElementById('doneBtn').click();a.d.getElementById('doneBtn').click();
+    assert(JSON.parse(a.store.raw).done.length===id,'doublon/progression');
+   }
+   assert(a.d.getElementById('bar').style.width==='100%','barre');
+   for(let id=1;id<=12;id++){
+    a.w.selectS(Math.ceil(id/3),id);a.d.getElementById('resetBtn').click();
+    const done=JSON.parse(a.store.raw).done;
+    assert(done.length===12-id&&!done.includes(id),'réinitialisation');
+   }
+   assert(a.d.getElementById('bar').style.width==='0%','barre finale');
+  }finally{a.close()}
+ });
+ await test('Score, zéro, notes et relecture persistante sans écriture initiale',async()=>{
+  let a=await app();let raw;try{
+   const score=a.d.getElementById('score'),notes=a.d.getElementById('notes');
+   for(const value of ['5','0','']){score.value=value;score.oninput();assert(JSON.parse(a.store.raw).score===value,'score');assert(a.d.getElementById('best').textContent===(value||'1'),'affichage')}
+   notes.value='Élastique léger\n<texte> 🏆';notes.oninput();raw=a.store.raw;
+  }finally{a.close()}
+  a=await app(raw);try{assert(a.store.writes===0,'écriture au chargement');assert(a.d.getElementById('notes').value===JSON.parse(raw).notes,'notes perdues')}finally{a.close()}
+ });
+ await test('Export sur clic : sauvegarde JSON, valeur brute exacte, champs inconnus préservés',async()=>{
+  const raw=' {"done":[2],"score":"0","notes":"Été","extra":42} ';
+  const a=await app(raw);try{
+   assert(a.store.downloads===0,'export automatique');a.d.getElementById('exportBtn').click();
+   const backup=JSON.parse(await a.store.blobs[0].text());
+   assert(backup.raw===raw&&backup.data.extra===42&&backup.key==='tractions-v2','export');
+   assert(a.store.downloads===1&&a.store.writes===0&&a.store.raw===raw,'effet export');
+   a.d.getElementById('notes').value='suite';a.d.getElementById('notes').oninput();
+   assert(JSON.parse(a.store.raw).extra===42,'champ inconnu perdu');
+  }finally{a.close()}
+ });
+ await test('Données invalides conservées, commandes bloquées, export brut possible',async()=>{
+  for(const raw of ['', '{cassé', 'null','[]','{}',...[
+   {done:[1,1],score:'',notes:''},{done:[13],score:'',notes:''},
+   {done:['1'],score:'',notes:''},{done:[],score:2,notes:''},
+   {done:[],score:'31',notes:''},{done:[],score:'',notes:null}
+  ].map(JSON.stringify)]){
+   const a=await app(raw);try{
+    assert(a.d.getElementById('doneBtn').disabled&&a.d.getElementById('notes').disabled,'non bloqué');
+    a.d.getElementById('doneBtn').click();a.d.getElementById('exportBtn').click();
+    const b=JSON.parse(await a.store.blobs[0].text());
+    assert(!b.valid&&b.raw===raw&&a.store.raw===raw&&a.store.writes===0,'source altérée');
+   }finally{a.close()}
+  }
+ });
+ await test('Stockage inaccessible, quota et conflit autre onglet',async()=>{
+  let a=await app(null,{readError:true});try{assert(a.d.getElementById('doneBtn').disabled,'lecture');a.d.getElementById('exportBtn').click();assert(a.store.downloads===0,'faux export')}finally{a.close()}
+  const raw='{"done":[2],"score":"1","notes":"original"}';
+  a=await app(raw,{writeError:true});try{
+   a.d.getElementById('notes').value='non enregistré';a.d.getElementById('notes').oninput();
+   assert(a.store.raw===raw&&a.d.getElementById('notes').disabled,'quota');
+   a.d.getElementById('exportBtn').click();const b=JSON.parse(await a.store.blobs[0].text());
+   assert(b.raw===raw&&b.displayedData.notes==='non enregistré','copie non enregistrée');
+  }finally{a.close()}
+  a=await app(raw);try{a.store.raw='autre capture';a.d.getElementById('doneBtn').click();assert(a.store.raw==='autre capture'&&a.store.writes===0&&a.d.getElementById('doneBtn').disabled,'conflit')}finally{a.close()}
+ });
+ await test('Hors connexion : shell du worker servi depuis le cache, application sans Firebase',async()=>{
+  const handlers={},entries=new Map(),shell=decode(SOURCES.index);
+  const cache={addAll:async urls=>urls.forEach(u=>entries.set(u,shell)),put:async(k,v)=>entries.set(k,v)};
+  const caches={open:async()=>cache,keys:async()=>['objectif-5-fractions-v1'],match:async r=>entries.get(typeof r==='string'?r:r.url)};
+  const self={addEventListener:(k,f)=>handlers[k]=f,skipWaiting(){},clients:{claim(){}}};
+  Function('self','caches','fetch',decode(SOURCES.sw))(self,caches,()=>Promise.reject(Error('offline')));
+  let pending;handlers.install({waitUntil:p=>pending=p});await pending;
+  let response;handlers.fetch({request:{method:'GET',url:'./index.html'},respondWith:p=>response=p});
+  assert(await response===shell,'cache hors connexion');
+  handlers.fetch({request:{method:'GET',url:'./autre-navigation'},respondWith:p=>response=p});
+  assert(await response===shell,'repli hors connexion');
+  assert(!/<script[^>]+src=|firebase(app|auth|firestore)|initializeApp\(/i.test(shell),'dépendance distante');
+ });
+ document.getElementById('results').textContent=results.join('\n')+'\n'+(results.some(r=>r.startsWith('FAIL'))?'FAILED':'ALL PASSED');
+}
+main().catch(e=>document.getElementById('results').textContent='FAILED '+e.stack);
+</script>

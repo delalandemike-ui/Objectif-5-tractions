@@ -49,6 +49,9 @@ label{font-weight:600;display:block;margin:10px 0 5px}
 <section class="card"><h2>📝 Mon suivi</h2>
 <label for="score">Meilleur nombre de tractions strictes</label><input id="score" type="number" min="0" max="30" placeholder="Ex. 2">
 <label for="notes">Mes notes</label><textarea id="notes" rows="4" placeholder="Sensations, élastique utilisé, difficultés..."></textarea>
+<p id="storageStatus" class="small" role="status" aria-live="polite"></p>
+<button id="exportBtn" class="secondary" type="button">Exporter mes données (JSON)</button>
+<p class="small">Le fichier contient vos résultats et vos notes personnelles. Conservez-le dans un endroit sûr.</p>
 </section>
 
 <section class="card"><h2>💡 Consignes</h2><ul>
@@ -74,7 +77,28 @@ const S=[
 [4,11,"3 × 1","3 × 3","—","Suspension 2 × 20 s · gainage 2 × 30 s","35 min"],
 [4,12,"🏆 TEST : 5","—","—","Échauffement + récupération","30–35 min"]
 ];
-let state=JSON.parse(localStorage.getItem("tractions-v2")||'{"done":[],"score":"","notes":""}');
+// Conservé dans le HTML : le service worker actuel ne précharge pas de module externe.
+const STORAGE_KEY="tractions-v2";
+function validLocalData(value){
+  return value!==null && typeof value==="object" && !Array.isArray(value)
+    && Array.isArray(value.done) && value.done.every(id=>Number.isInteger(id)&&id>=1&&id<=12)
+    && new Set(value.done).size===value.done.length
+    && typeof value.score==="string" && (value.score==="" || (/^\d+$/.test(value.score)&&Number(value.score)<=30))
+    && typeof value.notes==="string";
+}
+function readLocalData(){
+  let raw;
+  try { raw=localStorage.getItem(STORAGE_KEY) }
+  catch(error){return {ok:false,message:"Le stockage local est inaccessible. Aucune donnée n'a été remplacée."}}
+  if(raw===null)return {ok:true,raw,state:{done:[],score:"",notes:""}};
+  try {
+    const value=JSON.parse(raw);
+    if(validLocalData(value))return {ok:true,raw,state:value};
+  } catch(error){}
+  return {ok:false,raw,message:"Les données locales sont illisibles ou non conformes. Elles sont conservées. Exportez-les avant toute réparation ; la modification du suivi est bloquée."};
+}
+let loaded=readLocalData();
+let state=loaded.ok?loaded.state:{done:[],score:"",notes:""};
 const $=id=>document.getElementById(id), weeks=[1,2,3,4];
 weeks.forEach(w=>{let o=document.createElement("option");o.value=w;o.textContent="Semaine "+w;$("week").appendChild(o)});
 $("week").onchange=fillSessions;$("session").onchange=show;
@@ -82,7 +106,42 @@ $("doneBtn").onclick=()=>{let id=+$("session").value;if(!state.done.includes(id)
 $("resetBtn").onclick=()=>{let id=+$("session").value;state.done=state.done.filter(x=>x!==id);save();render()};
 $("score").oninput=()=>{state.score=$("score").value;save();render()};
 $("notes").oninput=()=>{state.notes=$("notes").value;save()};
-function save(){localStorage.setItem("tractions-v2",JSON.stringify(state))}
+function storageMessage(message){$("storageStatus").textContent=message}
+function lockStorage(message){
+  loaded.ok=false;
+  ["doneBtn","resetBtn","score","notes"].forEach(id=>$(id).disabled=true);
+  storageMessage(message);
+}
+function save(){
+  if(!loaded.ok)return false;
+  try {
+    if(localStorage.getItem(STORAGE_KEY)!==loaded.raw){
+      lockStorage("Les données locales ont changé dans un autre onglet. Rechargez la page avant de modifier le suivi. Aucune donnée n'a été écrasée.");return false;
+    }
+    const raw=JSON.stringify(state);
+    localStorage.setItem(STORAGE_KEY,raw);
+    loaded.raw=raw;
+    storageMessage("Suivi enregistré sur cet appareil.");return true;
+  } catch(error){
+    lockStorage("Enregistrement impossible : stockage inaccessible ou plein. Les dernières modifications restent affichées mais ne sont pas enregistrées. Exportez-les avant de recharger.");return false;
+  }
+}
+function exportLocalData(){
+  let url,link;
+  try {
+    // Lecture au clic uniquement ; raw conserve aussi un JSON ancien ou invalide à l'identique.
+    const current=readLocalData();
+    if(current.raw===undefined){storageMessage("Export impossible : le stockage local est inaccessible.");return}
+    const backup={format:"objectif-5-tractions-local-export",version:1,exportedAt:new Date().toISOString(),key:STORAGE_KEY,
+      raw:current.raw,data:current.ok?current.state:null,valid:current.ok,
+      displayedData:state};
+    url=URL.createObjectURL(new Blob([JSON.stringify(backup,null,2)],{type:"application/json;charset=utf-8"}));
+    link=document.createElement("a");link.href=url;link.download="tractions-v2-"+new Date().toISOString().replace(/[:.]/g,"-")+".json";
+    document.body.appendChild(link);link.click();
+    storageMessage("Export JSON demandé. Vérifiez que le fichier a bien été téléchargé.");
+  } catch(error){storageMessage("L'export n'a pas pu être préparé. Les données locales n'ont pas été modifiées.")}
+  finally {if(link)link.remove();if(url)setTimeout(()=>URL.revokeObjectURL(url),1000)}
+}
 function fillSessions(){ $("session").innerHTML="";S.filter(x=>x[0]==+$("week").value).forEach(x=>{let o=document.createElement("option");o.value=x[1];o.textContent="Séance "+x[1];$("session").appendChild(o)});show()}
 function cur(){return S.find(x=>x[1]==+$("session").value)}
 function show(){let x=cur();$("detail").innerHTML=`<div class="week w${x[0]}"><h3>Semaine ${x[0]} · Séance ${x[1]}</h3><div class="exercise"><b>Tractions sans aide</b>${x[2]}</div><div class="exercise"><b>Tractions avec élastique</b>${x[3]}</div><div class="exercise"><b>Descentes lentes</b>${x[4]}</div><div class="exercise"><b>Autres exercices</b>${x[5]}</div><p><b>Durée :</b> ${x[6]}</p></div>`}
@@ -92,6 +151,8 @@ $("done").textContent=state.done.length;$("best").textContent=state.score||1;$("
 $("score").value=state.score;$("notes").value=state.notes;$("all").innerHTML="";
 weeks.forEach(w=>{let box=document.createElement("div");box.className="week w"+w;box.innerHTML=`<h3>Semaine ${w}</h3>`;S.filter(x=>x[0]==w).forEach(x=>{let d=document.createElement("div");d.className="session "+(state.done.includes(x[1])?"done":"");d.innerHTML=`<span><b>Séance ${x[1]}</b><br><span class="small">${x[2]} · ${x[6]}</span></span><button class="${state.done.includes(x[1])?"secondary":""}">${state.done.includes(x[1])?"✓ Faite":"Ouvrir"}</button>`;d.querySelector("button").onclick=()=>selectS(w,x[1]);box.appendChild(d)});$("all").appendChild(box)})}
 $("week").value=1;fillSessions();render();
+$("exportBtn").onclick=exportLocalData;
+if(!loaded.ok)lockStorage(loaded.message);
 if("serviceWorker" in navigator) navigator.serviceWorker.register("sw.js").catch(()=>{});
 </script>
 </body></html>

@@ -1,0 +1,14 @@
+{
+  "name": "objectif-5-tractions-tests",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Outillage de test isole ; aucune dependance de l'application GitHub Pages",
+  "engines": { "node": ">=24.12.0" },
+  "devDependencies": {
+    "@firebase/rules-unit-testing": "6.0.0",
+    "firebase": "13.1.0",
+    "firebase-tools": "15.34.2",
+    "playwright": "1.56.1",
+    "yaml": "2.8.1"
+  }
+}

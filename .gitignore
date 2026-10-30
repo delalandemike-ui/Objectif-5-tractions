@@ -1,0 +1,53 @@
+# Dependencies and generated test artifacts (at any depth).
+node_modules/
+test-results/
+.firebase/
+
+# Local environment configuration; keep fictitious templates.
+.env
+.env.*
+!.env.example
+!.env.sample
+!.env.template
+
+# Private keys and credential containers.
+*.key
+*.pem
+*.p12
+*.pfx
+*.jks
+*.keystore
+id_rsa
+id_rsa.*
+id_ed25519
+id_ed25519.*
+id_ecdsa
+id_ecdsa.*
+
+# Service accounts and local authentication credentials.
+*service-account*.json
+*service_account*.json
+*serviceAccount*.json
+*firebase-adminsdk*.json
+credentials.json
+application_default_credentials.json
+.npmrc
+.netrc
+
+# Logs, temporary files and editor/OS leftovers.
+*.log
+*.tmp
+*.temp
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+
+# Personal progress exports, never test source files.
+tractions-v2-*.json
+
+# Explicitly named fictitious examples remain eligible for review.
+!*.example.json
+!*.sample.json
+!*.template.json
