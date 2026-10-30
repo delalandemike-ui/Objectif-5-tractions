@@ -9,6 +9,6 @@ foreach ($tool in @('node','java','firebase')) {
 Push-Location $root
 try {
     # Projet demo uniquement : aucun login ni déploiement dans ce lanceur.
-    & firebase emulators:exec --project demo-objectif-5-tractions --config tests/firestore/firebase.json --only firestore 'node --test --test-concurrency=1 tests/firestore/security.test.mjs'
+    & firebase emulators:exec --project demo-objectif-5-tractions --config firebase.json --only firestore 'node --test --test-concurrency=1 tests/firestore/security.test.mjs'
     if ($LASTEXITCODE -ne 0) { throw 'Emulator tests failed or prerequisites incomplete' }
 } finally { Pop-Location }

@@ -90,7 +90,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File tests/firestore/check-prepar
 powershell -NoProfile -ExecutionPolicy Bypass -File tests/firestore/run-security-tests.ps1
 ```
 
-Le lanceur d'émulateur utilise uniquement `--project demo-objectif-5-tractions`, la configuration locale `tests/firestore/firebase.json`, l'interface `127.0.0.1:8080` et une exécution séquentielle. Le fichier de test refuse tout autre `FIRESTORE_EMULATOR_HOST`. Il n'y a ni commande de connexion, ni déploiement, ni configuration du vrai projet. Ne pas utiliser cette configuration avec `firebase deploy`.
+Le lanceur d'émulateur utilise uniquement `--project demo-objectif-5-tractions`, la configuration locale `firebase.json`, l'interface `127.0.0.1:8080` et une exécution séquentielle. Le fichier de test refuse tout autre `FIRESTORE_EMULATOR_HOST`. Il n'y a ni commande de connexion, ni déploiement, ni configuration du vrai projet. Ne pas utiliser cette configuration avec `firebase deploy`.
 
 ## Résultats réellement obtenus et limites
 

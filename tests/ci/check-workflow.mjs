@@ -1,7 +1,7 @@
 // Controle structurel YAML et garde-fous, distinct de la validation des regles.
 import assert from 'node:assert/strict';
 import { readFile, realpath } from 'node:fs/promises';
-import { resolve } from 'node:path';
+import { resolve, relative, isAbsolute } from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { parseDocument } from 'yaml';
 
@@ -30,14 +30,21 @@ assert.equal(job.steps.find(step => step.uses?.startsWith('actions/setup-java@')
 const engine = job.steps.find(step => step.id === 'firestore');
 assert.ok(engine.run.includes('--project demo-objectif-5-tractions'));
 assert.ok(engine.run.includes('--only firestore'));
-assert.ok(engine.run.includes('--config firestore/firebase.json'));
+assert.equal(engine['working-directory'], '.');
+assert.ok(engine.run.includes('./tests/node_modules/.bin/firebase'));
+assert.ok(engine.run.includes('--config firebase.json'));
+assert.ok(engine.run.includes('tests/firestore/security.test.mjs'));
 assert.ok(engine.run.includes('--test-concurrency=1'));
 assert.ok(engine.run.includes('set -o pipefail'));
 assert.ok(!job.steps.some(step => step['continue-on-error']));
-const config = JSON.parse(await read('tests/firestore/firebase.json'));
+const config = JSON.parse(await read('firebase.json'));
 assert.equal(config.emulators.firestore.host, '127.0.0.1');
 assert.equal(config.emulators.firestore.port, 8080);
-assert.equal(await realpath(resolve(root, 'tests/firestore', config.firestore.rules)), await realpath(resolve(root, 'firebase/firestore.rules')));
+assert.equal(config.firestore.rules, 'firebase/firestore.rules');
+const resolvedRules = await realpath(resolve(root, config.firestore.rules));
+const rulesRelative = relative(await realpath(root), resolvedRules);
+assert.ok(!isAbsolute(rulesRelative) && !rulesRelative.startsWith('..'), 'Regles hors du repertoire projet');
+assert.equal(resolvedRules, await realpath(resolve(root, 'firebase/firestore.rules')));
 const tests = await read('tests/firestore/security.test.mjs');
 assert.equal((tests.match(/^test\('/gm) || []).length, 24);
 assert.ok(tests.includes("process.env.FIRESTORE_EMULATOR_HOST !== '127.0.0.1:8080'"));

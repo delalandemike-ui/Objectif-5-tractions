@@ -72,11 +72,11 @@ jobs:
       - name: Executer les 24 scenarios dans Firestore Emulator
         id: firestore
         if: ${{ !cancelled() && steps.config.outcome == 'success' }}
-        working-directory: tests
+        working-directory: .
         shell: bash
         run: |
           set -o pipefail
-          ./node_modules/.bin/firebase emulators:exec --non-interactive --project demo-objectif-5-tractions --config firestore/firebase.json --only firestore 'node --test --test-concurrency=1 --test-reporter=tap firestore/security.test.mjs' 2>&1 | tee ../test-results/firestore.log
+          ./tests/node_modules/.bin/firebase emulators:exec --non-interactive --project demo-objectif-5-tractions --config firebase.json --only firestore 'node --test --test-concurrency=1 --test-reporter=tap tests/firestore/security.test.mjs' 2>&1 | tee test-results/firestore.log
 
       - name: Installer Chromium dans le runner temporaire
         id: browser
@@ -118,6 +118,7 @@ jobs:
           name: verification-firestore-${{ github.run_id }}
           path: |
             test-results/
+            *debug.log
             tests/*debug.log
             tests/firestore/*debug.log
             tests/package-lock.json

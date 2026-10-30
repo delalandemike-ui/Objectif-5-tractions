@@ -46,17 +46,17 @@ Les métadonnées publiques npm de ces cinq dépendances ont été lues sans ins
 2. Récupérer le commit du déclenchement en lecture seule, sans conserver les identifiants Git dans la copie. Le rattachement local au nom de branche se fait uniquement dans le runner jetable, sur le même SHA, sans commit ni push.
 3. Préparer Node 24 et Java 21, puis les dépendances de tests dans `tests/node_modules`. Aucun SDK n'est ajouté au site.
 4. Analyser le YAML avec `tests/ci/check-workflow.mjs` : clés uniques, déclencheur, branche, permissions, versions, projet fictif, chemin réel du fichier de règles, garde émulateur et nombre de scénarios. Exécuter aussi les contrôles PowerShell statiques existants. Ces étapes ne sont pas une validation des règles.
-5. Lancer uniquement Firestore sur `127.0.0.1:8080` via la configuration existante `tests/firestore/firebase.json`, dans le projet **demo-objectif-5-tractions**. `emulators:exec` charge les règles locales et lance les 24 scénarios Node, puis arrête l'émulateur.
+5. Lancer uniquement Firestore sur `127.0.0.1:8080` via la configuration existante `firebase.json`, dans le projet **demo-objectif-5-tractions**. `emulators:exec` charge les règles locales et lance les 24 scénarios Node, puis arrête l'émulateur.
 6. Installer Chromium dans le runner et exécuter `tests/ci/run-browser-tests.mjs`. Ce lanceur réutilise sans les modifier `regression.html` (7 groupes), `firebase-config.html` (7 groupes) et `auth.html` (10 groupes). Il vérifie les nombres attendus et bloque les requêtes HTTP externes et les vrais service workers dans ces bancs simulés.
 7. Afficher le statut de chaque catégorie dans le résumé GitHub ; conserver journaux TAP Firestore, comptes rendus navigateur, journaux d'émulateur, versions installées et lockfile de résolution pendant 7 jours.
 
-Commande moteur prévue, exécutée depuis `tests` dans le runner :
+Commande moteur prévue, exécutée depuis la racine du dépôt dans le runner :
 
 ```sh
-./node_modules/.bin/firebase emulators:exec --non-interactive \
-  --project demo-objectif-5-tractions --config firestore/firebase.json \
+./tests/node_modules/.bin/firebase emulators:exec --non-interactive \
+  --project demo-objectif-5-tractions --config firebase.json \
   --only firestore \
-  'node --test --test-concurrency=1 --test-reporter=tap firestore/security.test.mjs'
+  'node --test --test-concurrency=1 --test-reporter=tap tests/firestore/security.test.mjs'
 ```
 
 Le fichier de tests impose toujours `FIRESTORE_EMULATOR_HOST=127.0.0.1:8080`, fourni par le CLI. Les contextes Auth et les données sont fictifs ; aucun compte Auth réel n'est créé. Le [guide officiel des tests de règles](https://firebase.google.com/docs/firestore/security/test-rules-emulator) décrit l'évaluation des règles par l'émulateur. La [documentation Playwright CI](https://playwright.dev/docs/ci-intro) décrit l'installation des navigateurs dans GitHub Actions.
