@@ -21,11 +21,22 @@ const fixtures = [
   { name: 'verification-email-simulee', file: 'verification-email-coach.test.html', expected: 10, sources: {
     module: encode(await read('tests/email-verification-controller.js')),
     page: encode(await read('tests/verification-email-coach.html'))
+  } },
+  { name: 'coach-simule', file: 'coach.test.html', expected: 12, sources: {
+    auth: encode(await read('js/auth.js')), data: encode(await read('js/coach-data.js')),
+    page: encode(await read('js/coach-page.js')), layout: encode(await read('coach.html')), index
+  } },
+  { name: 'multisport-simule', file: 'multisport.test.html', expected: 13, sources: {
+    store: encode(await read('js/athlete-store.js')),
+    page: encode(await read('js/athlete-page.js')), layout: encode(await read('athlete.html')),
+    remote: encode(await read('js/athlete-data.js')), cloud: encode(await read('js/cloud.js')),
+    management: encode(await read('js/coach-management.js')), index,
+    baseline: encode(execFileSync('git', ['show', 'HEAD:index.html'], { cwd: root, encoding: 'utf8' }))
   } }
 ];
 const temp = await mkdtemp(join(tmpdir(), 'tractions-ci-'));
 await mkdir(join(root, 'test-results'), { recursive: true });
-const browser = await chromium.launch({ headless: true });
+const browser = await chromium.launch({ headless: true, ...(process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE ? { executablePath: process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE } : {}) });
 let failed = false;
 try {
   for (const fixture of fixtures) {

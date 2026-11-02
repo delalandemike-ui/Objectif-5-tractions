@@ -1,0 +1,46 @@
+name: Publier multisport sur GitHub Pages
+
+# Un push ordinaire ne publie rien. Le message marque explicitement l'autorisation.
+on:
+  push:
+    branches: [developpement-coach]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pages-multisport
+  cancel-in-progress: false
+
+jobs:
+  build:
+    if: contains(github.event.head_commit.message, '[publish-multisport]')
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Confirmer la branche
+        run: |
+          test "$GITHUB_REF" = refs/heads/developpement-coach
+          git checkout -B developpement-coach "$GITHUB_SHA"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - name: Construire les seuls fichiers publics
+        run: node scripts/build-pages.mjs
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: _site
+  deploy:
+    needs: build
+    runs-on: ubuntu-24.04
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.pages.outputs.page_url }}
+    steps:
+      - uses: actions/deploy-pages@v4
+        id: pages

@@ -4,6 +4,7 @@ import { test, before, beforeEach, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { initializeTestEnvironment, assertFails, assertSucceeds } from '@firebase/rules-unit-testing';
 import { doc, collection, getDoc, getDocs, setDoc, updateDoc, deleteDoc, serverTimestamp, Timestamp, query, where, documentId, writeBatch, deleteField } from 'firebase/firestore';
+import * as sparkSdk from 'firebase/firestore';
 
 const projectId = 'demo-objectif-5-tractions';
 if (process.env.FIRESTORE_EMULATOR_HOST !== '127.0.0.1:8080') {
@@ -93,7 +94,8 @@ test('élévation de privilèges : profil, configuration, claim coach et invitat
   for (const actor of [alice, db('coach')]) {
     await assertFails(setDoc(doc(actor, 'settings/access'), { coachUid: 'alice', active: true }));
     await assertFails(deleteDoc(doc(actor, 'settings/access')));
-    await assertFails(read(actor, 'invitations/pending'));
+    if (actor === alice) await assertFails(read(actor, 'invitations/pending'));
+    else await assertSucceeds(read(actor, 'invitations/pending'));
     await assertFails(updateDoc(doc(actor, 'invitations/pending'), { status: 'accepted' }));
   }
   await assertFails(read(db('fake-coach', { coach: true, role: 'coach' })));
@@ -243,4 +245,88 @@ test('chemins imbriqués inconnus : aucun héritage de permission', async () => 
       await assertFails(setDoc(doc(actor, path), { value: true }));
     }
   }
+});
+
+test('performances et commentaires de séance : bornes, types et anciennes séances compatibles', async () => {
+  const alice = db('alice');
+  const ref = doc(alice, `${progress}/sessions/12`);
+  await assertSucceeds(setDoc(ref, { ...session(), performance: 0, comments: 'Élastique léger' }));
+  for (const fields of [
+    { performance: -1 }, { performance: 10001 }, { performance: 1.5 }, { performance: '2' },
+    { comments: 1 }, { comments: 'x'.repeat(5001) }, { comments: null }
+  ]) await assertFails(setDoc(ref, { ...session(2), ...fields }));
+  await assertSucceeds(setDoc(ref, { ...session(2), performance: 10000, comments: 'x'.repeat(5000) }));
+  await assertSucceeds(setDoc(ref, session(3)));
+  await assertFails(setDoc(doc(db('coach'), `${progress}/sessions/12`), { ...session(4), performance: 2, comments: 'interdit' }));
+  await env.withSecurityRulesDisabled(async c => updateDoc(doc(c.firestore(), 'athletes/alice'), { enrolled: false }));
+  await assertFails(read(alice, `${progress}/sessions/12`));
+  await assertFails(setDoc(ref, { ...session(4), performance: 2, comments: 'révoqué' }));
+});
+
+const sparkCode = (await readFile(new URL('../../js/invitations.js', import.meta.url), 'utf8')).replace("import { cloud } from './cloud.js';", 'const cloud = async () => globalThis.sparkContext;');
+const { accessAction } = await import('data:text/javascript;base64,' + Buffer.from(sparkCode).toString('base64'));
+const sparkUser = (uid = 'coach', verified = true) => ({ uid, email: `${uid}@example.invalid`, emailVerified: verified });
+function spark(user, action, input) {
+  globalThis.sparkContext = { sdk: sparkSdk, db: db(user.uid, { email: user.email, email_verified: user.emailVerified }) };
+  return accessAction(user, action, input);
+}
+async function pendingSpark() { return (await spark(sparkUser(), 'createInvitation', { email: 'charlie@example.invalid' })).id; }
+async function requestedSpark() { const id = await pendingSpark(); await spark(sparkUser('charlie'), 'acceptInvitation', { id, displayName: 'Charlie' }); return id; }
+test('Spark : seul le coach crée et liste les invitations ; lecture liée à l’adresse vérifiée', async () => {
+  const id = await pendingSpark();
+  await assertSucceeds(read(db('charlie', { email: 'charlie@example.invalid' }), `invitations/${id}`));
+  await assertFails(read(db('stranger', { email: 'stranger@example.invalid' }), `invitations/${id}`));
+  await assertFails(read(db('charlie', { email: 'charlie@example.invalid', email_verified: false }), `invitations/${id}`));
+  await assertSucceeds(spark(sparkUser(), 'listInvitations'));
+  await assertFails(spark(sparkUser('charlie'), 'listInvitations'));
+  await assertFails(spark(sparkUser('stranger'), 'createInvitation', { email: 'charlie@example.invalid' }));
+});
+test('Spark : une demande vérifiée ne vaut jamais admission et ne modifie pas le destinataire', async () => {
+  const id = await pendingSpark();
+  await assertFails(spark(sparkUser('stranger'), 'acceptInvitation', { id }));
+  await assertFails(updateDoc(doc(db('charlie', { email: 'charlie@example.invalid' }), 'invitations', id), { email: 'other@example.invalid', status: 'requested', athleteUid: 'charlie', displayName: '', requestedAt: serverTimestamp() }));
+  await spark(sparkUser('charlie'), 'acceptInvitation', { id, displayName: 'Charlie' });
+  await spark(sparkUser('charlie'), 'acceptInvitation', { id, displayName: 'Charlie' });
+  await assertFails(setDoc(doc(db('charlie'), 'athletes/charlie'), { enrolled: true, invitationId: id, invitedBy: 'coach', acceptedAt: serverTimestamp() }));
+  await assertFails(setDoc(doc(db('charlie'), 'athletes/charlie/programs/tractions-12-v1'), program()));
+  await assertFails(spark(sparkUser('charlie'), 'approveInvitation', { id }));
+});
+test('Spark : approbation atomique du coach obligatoire et résultats préexistants conservés', async () => {
+  const id = await requestedSpark(), coachDb = db('coach');
+  await assertFails(updateDoc(doc(coachDb, 'invitations', id), { status: 'accepted', acceptedAt: serverTimestamp() }));
+  await assertFails(setDoc(doc(coachDb, 'athletes/charlie'), { enrolled: true, invitedBy: 'coach', invitationId: id, acceptedAt: serverTimestamp() }));
+  await env.withSecurityRulesDisabled(async c => setDoc(doc(c.firestore(), 'athletes/charlie/programs/tractions-12-v1'), { schemaVersion: 1, score: 3, notes: 'ancien', revision: 1, updatedAt: stamp }));
+  await spark(sparkUser(), 'approveInvitation', { id });
+  const result = await read(db('charlie'), 'athletes/charlie/programs/tractions-12-v1');
+  assert.equal(result.data().notes, 'ancien');
+  await assertSucceeds(setDoc(doc(db('charlie'), 'athletes/charlie/programs/tractions-12-v1/sessions/1'), { ...session(), performance: 2, comments: 'Spark' }));
+  await assertSucceeds(read(coachDb, 'athletes/charlie/programs/tractions-12-v1/sessions/1'));
+});
+test('Spark : invitations annulées ou expirées et coach inactif refusés', async () => {
+  const id = await pendingSpark(); await spark(sparkUser(), 'manageAccess', { action: 'cancel', id });
+  await assertFails(spark(sparkUser('charlie'), 'acceptInvitation', { id }));
+  const expired = await pendingSpark();
+  await env.withSecurityRulesDisabled(async c => updateDoc(doc(c.firestore(), 'invitations', expired), { expiresAt: stamp }));
+  await assertFails(spark(sparkUser('charlie'), 'acceptInvitation', { id: expired }));
+  const requested = await requestedSpark();
+  await env.withSecurityRulesDisabled(async c => updateDoc(doc(c.firestore(), 'settings/access'), { active: false }));
+  await assertFails(spark(sparkUser(), 'approveInvitation', { id: requested }));
+});
+test('Spark : révocation atomique, refus du rejeu et conservation des résultats', async () => {
+  const id = await requestedSpark(); await spark(sparkUser(), 'approveInvitation', { id });
+  await assertSucceeds(setDoc(doc(db('charlie'), 'athletes/charlie/programs/tractions-12-v1'), program()));
+  await assertFails(updateDoc(doc(db('coach'), 'athletes/charlie'), { enrolled: false, revokedAt: serverTimestamp() }));
+  await assertFails(updateDoc(doc(db('coach'), 'coaches/coach/athletes/charlie'), { status: 'revoked', revokedAt: serverTimestamp() }));
+  await spark(sparkUser(), 'manageAccess', { action: 'revoke', id: 'charlie' });
+  await assertFails(read(db('charlie'), 'athletes/charlie/programs/tractions-12-v1'));
+  await assertFails(spark(sparkUser('charlie'), 'acceptInvitation', { id }));
+  await assert.rejects(spark(sparkUser(), 'approveInvitation', { id }));
+  await env.withSecurityRulesDisabled(async c => assertSucceeds(read(c.firestore(), 'athletes/charlie/programs/tractions-12-v1')));
+});
+test('Spark : concurrence et attribution non falsifiable de l’invitation', async () => {
+  const id = await requestedSpark();
+  await assertFails(updateDoc(doc(db('coach'), 'invitations', id), { athleteUid: 'stranger' }));
+  const results = await Promise.allSettled([spark(sparkUser(), 'approveInvitation', { id }), spark(sparkUser(), 'approveInvitation', { id })]);
+  assert.equal(results.filter(result => result.status === 'fulfilled').length, 1);
+  await assertFails(spark(sparkUser('fake-coach'), 'createInvitation', { email: 'fake@example.invalid' }));
 });

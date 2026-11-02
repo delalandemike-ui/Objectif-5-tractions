@@ -27,7 +27,7 @@ try{
   assert(m.firebaseConfig.apiKey==='AIzaSyBReeDylRA4uBhuEG24uKvlgaysEnWSzq0','clé Web');
   const html=decode(SOURCES.index),sw=decode(SOURCES.sw);
   assert(!html.includes('firebase-config')&&!html.includes('gstatic.com'),'module chargé par application');
-  assert(!sw.includes('firebase-config'),'worker modifié pour Firebase');
+  assert(sw.includes('./js/firebase-config.js')&&!sw.includes('gstatic.com'),'cache du module statique ou exclusion CDN incorrecte');
   assert(!/localStorage|sessionStorage|firebase-auth|firebase-firestore|signIn|createUser|signOut|getAuth|getFirestore|analytics/i.test(source),'effet de bord non autorisé');
  });
  await test('Validation avant tout chargement SDK',async()=>{

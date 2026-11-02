@@ -1,0 +1,16 @@
+<!doctype html><html lang="fr"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="referrer" content="no-referrer"><title>Mon espace sportif</title>
+<link rel="stylesheet" href="multisport.css"></head><body><main>
+<a href="index.html">← Programme et suivi local historique</a><h1>Mon espace sportif</h1>
+<p>Les résultats sont conservés par compte sur cet appareil. Sur un appareil partagé, utilisez un profil de navigateur personnel. Exportez votre suivi avant de vider le stockage.</p>
+<section><h2>Connexion</h2><form id="login"><label>E-mail<input id="email" type="email" autocomplete="email" required></label><label>Mot de passe<input id="password" type="password" autocomplete="current-password" required></label><button>Se connecter</button></form>
+<p>Première connexion : saisissez l’adresse invitée et un mot de passe d’au moins 6 caractères, créez votre compte puis vérifiez votre adresse. Un compte seul ne donne pas accès au programme partagé.</p>
+<button id="register" type="button">Créer mon compte et vérifier mon adresse</button><button id="verify" type="button">Renvoyer la vérification</button>
+<label>Reprendre un suivi sur cet appareil<select id="local-accounts"><option value="">Choisir un suivi local</option></select></label><button id="resume" type="button">Ouvrir hors connexion</button>
+<p id="identity"></p><button id="logout" type="button" hidden>Fermer mon espace</button></section>
+<section id="admission" hidden><h2>Mon invitation</h2><label>Lien d’invitation reçu<input id="invitation-link" type="url" autocomplete="off"></label><label>Nom affiché<input id="display-name" maxlength="100"></label><button id="accept" type="button">Demander mon admission au coach</button></section>
+<div id="workspace" hidden>
+<section><h2>Ma progression</h2><p id="progress"></p><label>Meilleur score<input id="athlete-score" type="number" min="0" max="30"></label><label>Notes générales<textarea id="athlete-notes" maxlength="20000"></textarea></label><button id="save-program">Enregistrer le suivi</button></section>
+<section><h2>Mes 12 séances</h2><label>Séance<select id="training"></select></label><div id="exercises"></div><label><input id="completed" type="checkbox"> Séance réalisée</label><label>Tractions strictes réalisées<input id="performance" type="number" min="0" max="10000"></label><label>Commentaires<textarea id="comments" maxlength="5000"></textarea></label><button id="save-session">Enregistrer cette séance</button></section>
+<section><h2>Mes données</h2><button id="sync">Synchroniser maintenant</button><button id="import">Importer mon suivi historique dans ce compte</button><button id="export">Exporter ce suivi complet</button><p>L’import conserve intégralement tractions-v2 et sa copie brute. Il demande un espace local vide ; un suivi distant existant provoque un conflit à résoudre.</p><div id="conflicts"></div></section>
+</div><p id="status" role="status" aria-live="polite">Chargement…</p>
+</main><script type="module" src="js/athlete-page.js"></script></body></html>

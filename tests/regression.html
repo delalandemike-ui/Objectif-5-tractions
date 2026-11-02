@@ -28,7 +28,7 @@ async function main(){
    const section=s=>s.slice(s.indexOf('<section class="card"><h2>'+heading)).split('</section>')[0];
    assert(section(current)===section(baseline),'section changée '+heading);
   }
-  assert(decode(SOURCES.sw).trimEnd()===decode(SOURCES.baselineSw).trimEnd(),'sw.js changé');
+  assert(decode(SOURCES.sw).includes('const APP_SHELL = ["./", "./index.html"]'),'programme hors connexion non préchargé');
  });
  await test('12 séances : ouverture, validation sans doublon, progression, réinitialisation individuelle',async()=>{
   const a=await app();try{
@@ -94,15 +94,20 @@ async function main(){
  });
  await test('Hors connexion : shell du worker servi depuis le cache, application sans Firebase',async()=>{
   const handlers={},entries=new Map(),shell=decode(SOURCES.index);
-  const cache={addAll:async urls=>urls.forEach(u=>entries.set(u,shell)),put:async(k,v)=>entries.set(k,v)};
-  const caches={open:async()=>cache,keys:async()=>['objectif-5-fractions-v1'],match:async r=>entries.get(typeof r==='string'?r:r.url)};
-  const self={addEventListener:(k,f)=>handlers[k]=f,skipWaiting(){},clients:{claim(){}}};
+  const cache={addAll:async urls=>urls.forEach(u=>entries.set(u,shell)),put:async(k,v)=>entries.set(k,v),match:async r=>entries.get(typeof r==='string'?r:r.url)};
+  const removed=[];
+  const caches={open:async()=>cache,keys:async()=>['objectif-5-fractions-v1','objectif-5-tractions-v2','autre-application'],delete:async key=>removed.push(key),match:async r=>entries.get(typeof r==='string'?r:r.url)};
+  const self={location:{href:'http://localhost/sw.js'},addEventListener:(k,f)=>handlers[k]=f,skipWaiting(){},clients:{claim(){}}};
   Function('self','caches','fetch',decode(SOURCES.sw))(self,caches,()=>Promise.reject(Error('offline')));
   let pending;handlers.install({waitUntil:p=>pending=p});await pending;
+  handlers.activate({waitUntil:p=>pending=p});await pending;
+  assert(removed.length===1&&removed[0]==='objectif-5-fractions-v1','autres caches supprimés');
   let response;handlers.fetch({request:{method:'GET',url:'./index.html'},respondWith:p=>response=p});
   assert(await response===shell,'cache hors connexion');
-  handlers.fetch({request:{method:'GET',url:'./autre-navigation'},respondWith:p=>response=p});
-  assert(await response===shell,'repli hors connexion');
+  for(const url of ['https://firestore.googleapis.com/test','https://www.gstatic.com/sdk.js','./coach.html','./js/coach-page.js','./index.html?oobCode=test']){
+   let intercepted=false;handlers.fetch({request:{method:'GET',url},respondWith(){intercepted=true}});
+   assert(!intercepted,'ressource privée interceptée : '+url);
+  }
   assert(!/<script[^>]+src=|firebase(app|auth|firestore)|initializeApp\(/i.test(shell),'dépendance distante');
  });
  document.getElementById('results').textContent=results.join('\n')+'\n'+(results.some(r=>r.startsWith('FAIL'))?'FAILED':'ALL PASSED');

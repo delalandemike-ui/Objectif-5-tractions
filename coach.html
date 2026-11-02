@@ -1,0 +1,32 @@
+<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="referrer" content="no-referrer"><title>Mon espace coach — Objectif 5 tractions</title>
+<style>
+body{margin:0;background:#f3f6f8;color:#17212b;font:16px system-ui}main{max-width:760px;margin:auto;padding:24px 16px}a{color:#174a6e}section{background:white;border-radius:16px;margin:20px 0;padding:24px;box-shadow:0 2px 10px #0001}h1{color:#174a6e}label{display:block;margin:16px 0 6px;font-weight:600}input,button{box-sizing:border-box;font:inherit;padding:12px;border-radius:8px}input{width:100%;border:1px solid #b7c7d1}button{background:#174a6e;color:white;border:0;cursor:pointer;margin:12px 6px 0 0}button:disabled{opacity:.55;cursor:default}.muted{color:#5b6872}li{padding:10px 0}#coach-status{padding:12px;border-left:4px solid #174a6e} [hidden]{display:none!important}
+</style></head>
+<body><main>
+<a href="index.html">← Revenir à mes séances</a>
+<h1>Mon espace coach</h1><p class="muted">Connexion au compte existant du coach. Vos résultats personnels restent sur votre appareil.</p>
+<section id="coach-login-panel"><h2>Connexion</h2>
+<form id="coach-login" autocomplete="off">
+<label for="coach-email">Adresse e-mail</label><input id="coach-email" type="email" required autocomplete="off" disabled>
+<label for="coach-password">Mot de passe</label><input id="coach-password" type="password" required autocomplete="off" disabled>
+<button id="coach-connect" disabled>Se connecter</button></form>
+<noscript><p>Activez JavaScript pour vous connecter. Vos séances restent accessibles depuis le lien ci-dessus.</p></noscript></section>
+<section id="coach-account" hidden><h2>Mon compte</h2><p id="coach-identity"></p><p id="coach-role">Statut coach non vérifié.</p>
+<button id="coach-refresh" type="button">Actualiser mon accès</button><button id="coach-disconnect" type="button">Se déconnecter</button></section>
+<section id="coach-dashboard" hidden><h2>Mes sportifs</h2><p id="coach-empty" hidden>Aucun sportif autorisé pour le moment.</p><ul id="coach-athletes"></ul></section>
+<p id="coach-status" role="status" aria-live="polite">Chargement de l’espace coach…</p>
+<p class="muted">Une connexion Internet est nécessaire pour cet espace. La session est conservée en mémoire jusqu’à la fermeture ou au rechargement de cette page.</p>
+<section id="coach-management" hidden></section>
+</main><script type="module">
+try {
+  const { mountCoachPage } = await import('./js/coach-page.js');
+  const { createCoachManagement } = await import('./js/coach-management.js');
+  await mountCoachPage(document, { onAccess: createCoachManagement(document.getElementById('coach-management')) });
+} catch {
+  document.getElementById('coach-status').textContent = 'Espace coach indisponible. Rechargez la page avec une connexion Internet. Vos séances restent accessibles.';
+}
+</script></body></html>

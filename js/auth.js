@@ -1,4 +1,4 @@
-// Préparation indépendante : aucun import ou appel depuis l'application actuelle.
+// Client partagé : aucun réseau avant une action explicite.
 export const AUTH_RETURN_URL = "https://delalandemike-ui.github.io/Objectif-5-tractions/";
 
 export class AuthPreparationError extends Error {
@@ -14,6 +14,8 @@ const MESSAGES = Object.freeze({
   "auth/invalid-action-code": "Le lien est invalide ou déjà utilisé. Demandez un nouveau lien.",
   "auth/invalid-email": "Saisissez une adresse e-mail valide.",
   "auth/invalid-credential": "Le lien ou l'adresse ne permet pas cette connexion.",
+  "auth/wrong-password": "Adresse ou mot de passe incorrect.",
+  "auth/user-not-found": "Adresse ou mot de passe incorrect.",
   "auth/user-disabled": "Ce compte est désactivé.",
   "auth/network-request-failed": "Connexion interrompue. Vérifiez l'état de session avant de réessayer.",
   "auth/too-many-requests": "Trop de tentatives. Patientez avant de réessayer.",
@@ -38,7 +40,7 @@ function linkValue(link) {
   const allowed = url && (url.origin === "https://objectif-5-tractions.firebaseapp.com"
     ? url.pathname === "/__/auth/action"
     : url.origin === "https://delalandemike-ui.github.io"
-      && ["/Objectif-5-tractions/", "/Objectif-5-tractions/index.html"].includes(url.pathname));
+      && ["/Objectif-5-tractions/", "/Objectif-5-tractions/index.html", "/Objectif-5-tractions/athlete.html"].includes(url.pathname));
   if (!allowed || url.username || url.password || ["apiKey", "mode", "oobCode"].some(key => url.searchParams.getAll(key).length !== 1)) {
     throw new AuthPreparationError("auth/invalid-action-code", MESSAGES["auth/invalid-action-code"]);
   }
@@ -60,7 +62,8 @@ async function loadDependencies() {
       })
     ]);
   } finally { clearTimeout(timer); }
-  return { sdk, app: await config.initializeFirebase() };
+  const app = await config.initializeFirebase();
+  return { sdk, app };
 }
 
 // Injection réservée aux tests ; le client par défaut utilise le SDK CDN réel.
@@ -95,13 +98,51 @@ export function createAuthClient({ load = loadDependencies } = {}) {
     finally { busy = false; }
   }
   return Object.freeze({
+    register(email, password) {
+      return exclusive(async () => {
+        const address = emailValue(email);
+        if (typeof password !== 'string' || password.length < 6) throw new AuthPreparationError('auth/weak-password', 'Utilisez au moins 6 caractères.');
+        const { sdk, auth } = await context();
+        const credential = await sdk.createUserWithEmailAndPassword(auth, address, password);
+        try { await sdk.sendEmailVerification(credential.user, { url: new URL('athlete.html', AUTH_RETURN_URL).href }); }
+        catch { throw new AuthPreparationError('auth/verification-not-sent', 'Compte créé, mais e-mail non envoyé. Connectez-vous puis utilisez Renvoyer la vérification.'); }
+        return identity(credential.user);
+      });
+    },
+    resendVerification() {
+      return exclusive(async () => {
+        const { sdk, auth } = await context();
+        if (!auth.currentUser) throw new AuthPreparationError('auth/no-user', 'Connectez-vous d’abord, même si votre adresse reste à vérifier.');
+        await sdk.sendEmailVerification(auth.currentUser, { url: new URL('athlete.html', AUTH_RETURN_URL).href });
+      });
+    },
     // Aucun envoi ou connexion ; prépare seulement Auth en mémoire sur demande.
     async initialize() { await context(); },
-    sendSignInLink(email) {
+    signInWithPassword(email, password) {
+      return exclusive(async () => {
+        try {
+          const address = emailValue(email);
+          if (typeof password !== 'string' || !password) throw new AuthPreparationError('auth/invalid-credential', 'Saisissez votre mot de passe.');
+          const { sdk, auth } = await context();
+          const credential = await sdk.signInWithEmailAndPassword(auth, address, password);
+          return identity(credential.user);
+        } finally { password = ''; }
+      });
+    },
+    refreshIdentity() {
+      return exclusive(async () => {
+        const { sdk, auth } = await context();
+        if (!auth.currentUser) return null;
+        await sdk.reload(auth.currentUser);
+        await sdk.getIdToken(auth.currentUser, true);
+        return identity(auth.currentUser);
+      });
+    },
+    sendSignInLink(email, { athlete = false } = {}) {
       return exclusive(async () => {
         const address = emailValue(email);
         const { sdk, auth } = await context();
-        await sdk.sendSignInLinkToEmail(auth, address, { url: AUTH_RETURN_URL, handleCodeInApp: true });
+        await sdk.sendSignInLinkToEmail(auth, address, { url: athlete ? new URL('athlete.html', AUTH_RETURN_URL).href : AUTH_RETURN_URL, handleCodeInApp: true });
         return Object.freeze({ status: "link-requested" });
       });
     },

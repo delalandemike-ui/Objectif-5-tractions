@@ -51,7 +51,10 @@ jobs:
       - name: Installer les outils uniquement dans le runner temporaire
         id: dependencies
         working-directory: tests
-        run: npm install --ignore-scripts --no-audit --no-fund
+        run: npm ci --ignore-scripts --no-audit --no-fund
+
+      - name: Tester la preparation de l'activation sans service reel
+        run: node --test tests/activation.test.mjs
 
       - name: Verifier le workflow et les preconditions
         id: config
@@ -69,7 +72,7 @@ jobs:
         shell: pwsh
         run: ./tests/firestore/check-preparation.ps1
 
-      - name: Executer les 24 scenarios dans Firestore Emulator
+      - name: Executer les 31 scenarios dans Firestore Emulator
         id: firestore
         if: ${{ !cancelled() && steps.config.outcome == 'success' }}
         working-directory: .
@@ -106,9 +109,9 @@ jobs:
             echo "Commit : $GITHUB_SHA"
             echo "Configuration : $CONFIG"
             echo "Controles statiques : $STATIC (ne prouvent pas la securite)"
-            echo "Moteur Firestore, 24 scenarios attendus : $FIRESTORE"
-            echo "Chromium, 34 groupes attendus (24 existants + 10 verification e-mail simulee) : $REGRESSION"
-            echo 'Consulter les journaux pour le nombre reel de tests executes. Un echec de compilation ne signifie pas que les 24 scenarios ont ete executes.'
+            echo "Moteur Firestore, 31 scenarios attendus : $FIRESTORE"
+            echo "Chromium, 59 groupes attendus (46 existants + 13 multisport simule) : $REGRESSION"
+            echo 'Consulter les journaux pour le nombre reel de tests executes. Un echec de compilation ne signifie pas que les 31 scenarios ont ete executes.'
             echo 'Aucun deploiement ni compte reel ; projet demo uniquement.'
           } >> "$GITHUB_STEP_SUMMARY"
 

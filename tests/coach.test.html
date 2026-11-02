@@ -1,0 +1,67 @@
+<!doctype html><meta charset="utf-8"><pre id="results">Tests en cours…</pre>
+<script type="module">
+// TEST_SOURCES
+const decode=s=>new TextDecoder().decode(Uint8Array.from(atob(s),c=>c.charCodeAt(0)));
+const results=[],urls=[];
+function assert(ok,message){if(!ok)throw Error(message)}
+async function test(name,run){try{await run();results.push('PASS '+name)}catch(e){results.push('FAIL '+name+': '+e.message)}}
+const blob=source=>{const url=URL.createObjectURL(new Blob([source],{type:'text/javascript'}));urls.push(url);return url};
+const tick=()=>new Promise(resolve=>setTimeout(resolve,0));
+try {
+const authUrl=blob(decode(SOURCES.auth)),dataUrl=blob(decode(SOURCES.data));
+const {createAuthClient}=await import(authUrl),{createCoachDataClient}=await import(dataUrl);
+const {mountCoachPage}=await import(blob(decode(SOURCES.page).replace('./auth.js',authUrl).replace('./coach-data.js',dataUrl)));
+function authFixture(){
+ const calls={load:0,login:0,reload:0,token:0},auth={currentUser:null},sdk={inMemoryPersistence:{},initializeAuth:(app,options)=>{assert(options.persistence===sdk.inMemoryPersistence,'persistance');return auth},sendSignInLinkToEmail(){throw Error('envoi interdit')},isSignInWithEmailLink(){},signInWithEmailLink(){},onAuthStateChanged(a,cb){cb(a.currentUser);return ()=>{}},async signOut(){auth.currentUser=null},async signInWithEmailAndPassword(a,email,password){calls.login++;assert(password==='fictif','secret');return {user:auth.currentUser={uid:'coach',email,emailVerified:true}}},async reload(){calls.reload++},async getIdToken(u,force){assert(force,'jeton');calls.token++}};
+ return {sdk,calls,auth,client:createAuthClient({load:async()=>{calls.load++;return {sdk,app:{}}}})};
+}
+await test('Auth : compte existant et persistance mémoire, aucun effet initial',async()=>{
+ const f=authFixture();assert(f.calls.load===0,'chargement initial');const user=await f.client.signInWithPassword('coach@example.invalid','fictif');assert(user.emailVerified&&user.uid==='coach'&&f.calls.login===1,'identité');assert(!('password' in user),'secret exposé');
+});
+await test('Auth : erreur contrôlée et opérations concurrentes',async()=>{
+ const f=authFixture();let release;f.sdk.signInWithEmailAndPassword=async()=>{await new Promise(r=>release=r);throw {code:'auth/invalid-credential',message:'SECRET'}};const first=f.client.signInWithPassword('coach@example.invalid','fictif');await tick();let busy=false;try{await f.client.signInWithPassword('coach@example.invalid','fictif')}catch(e){busy=e.code==='auth/busy'}release();try{await first;throw Error('succès inattendu')}catch(e){assert(e.code==='auth/invalid-credential'&&!e.message.includes('SECRET'),'erreur brute')}assert(busy,'double connexion');
+});
+await test('Auth : actualisation de l’identité et du jeton',async()=>{
+ const f=authFixture();await f.client.signInWithPassword('coach@example.invalid','fictif');await f.client.refreshIdentity();assert(f.calls.reload===1&&f.calls.token===1,'non actualisé');await f.client.signOut();assert(await f.client.refreshIdentity()===null,'session conservée');
+});
+function dataFixture(){
+ let next,error;const calls={paths:[],stops:0,load:0};const sdk={collection:(db,...path)=>{calls.paths.push(path.join('/'));return path},where:(...args)=>args,query:(...args)=>args,doc:(db,...path)=>path.join('/'),onSnapshot(q,options,cb,fail){assert(options.includeMetadataChanges,'cache');next=cb;error=fail;return ()=>calls.stops++},async getDocFromServer(path){calls.paths.push(path);return {exists:()=>true,data:()=>path.startsWith('athletes/')?{enrolled:true}:{displayName:'<img src=x onerror=alert(1)>'}}}};
+ const client=createCoachDataClient({load:async()=>{calls.load++;return {sdk,db:{}}}});return {client,calls,sdk,emit:(ids=[],fromCache=false)=>next({metadata:{fromCache},docs:ids.map(id=>({id}))}),error:e=>error(e)};
+}
+const coach={uid:'coach',email:'coach@example.invalid',emailVerified:true};
+await test('Données : coach confirmé même sur liste vide et jamais depuis le cache',async()=>{
+ const f=dataFixture(),states=[];const stop=await f.client.watch(coach,s=>states.push(s),e=>{throw e});f.emit([],true);assert(!states.at(-1).authorized,'cache autorisé');f.emit();await tick();assert(states.at(-1).authorized&&states.at(-1).athletes.length===0,'vide');assert(f.calls.paths[0]==='coaches/coach/athletes'&&!f.calls.paths.includes('settings/access'),'chemin');stop();
+});
+await test('Données : admission requise et profil lu sur le serveur',async()=>{
+ const f=dataFixture(),states=[];f.sdk.getDocFromServer=async path=>{f.calls.paths.push(path);if(path==='athletes/refuse')throw {code:'permission-denied'};return {exists:()=>true,data:()=>path.startsWith('athletes/')?{enrolled:true}:{displayName:'Alice fictive'}}};const stop=await f.client.watch(coach,s=>states.push(s),e=>{throw e});f.emit(['alice','refuse']);await tick();assert(states.at(-1).athletes.length===1&&states.at(-1).athletes[0].uid==='alice','admission');assert(f.calls.paths.includes('users/alice'),'profil');stop();
+});
+await test('Données : refus serveur, révocation et callbacks tardifs',async()=>{
+ const f=dataFixture(),states=[],errors=[];const stop=await f.client.watch(coach,s=>states.push(s),e=>errors.push(e));f.emit(['alice']);f.error({code:'permission-denied'});await tick();assert(errors.length===1&&!states.some(s=>s.authorized),'réponse tardive');assert(f.calls.stops===1,'écoute conservée');stop();
+});
+await test('Données : compte non vérifié et indisponibilité',async()=>{
+ const f=dataFixture();try{await f.client.watch({...coach,emailVerified:false},()=>{},()=>{});throw Error('accepté')}catch(e){assert(e.code==='coach/unverified','code')}assert(f.calls.load===0,'SDK chargé');let failure;f.sdk.getDocFromServer=async()=>{throw {code:'unavailable'}};await f.client.watch(coach,()=>{},e=>failure=e);f.emit(['alice']);await tick();assert(failure?.code==='unavailable','échec caché');
+});
+async function ui(){
+ const frame=document.createElement('iframe');document.body.append(frame);await new Promise(resolve=>{frame.onload=resolve;frame.srcdoc=decode(SOURCES.layout).replace(/<script type="module">[\s\S]*?<\/script>/,'')});const doc=frame.contentDocument,$=id=>doc.getElementById('coach-'+id),calls={login:0,watch:0,out:0};let next,fail,change;let current={...coach};
+ Object.defineProperty(frame.contentWindow,'localStorage',{get(){throw Error('stockage interdit')}});Object.defineProperty(frame.contentWindow,'sessionStorage',{get(){throw Error('stockage interdit')}});
+ const auth={async signInWithPassword(){calls.login++;return current},async observe(cb){change=cb;cb(current);return ()=>{}},async refreshIdentity(){return current},async signOut(){calls.out++;change(null)}};
+ const data={async watch(user,cb,error){calls.watch++;next=cb;fail=error;return ()=>{calls.stops=(calls.stops||0)+1}}};const control=mountCoachPage(doc,{auth,data});return {$,calls,doc,auth,data,control,setUser:u=>current=u,emitAuth:u=>change(u),emit:s=>next(s),error:e=>fail(e),login:()=>{$('email').value='coach@example.invalid';$('password').value='fictif';return $('login').onsubmit({preventDefault(){}})},close(){control.dispose();frame.remove()}};
+}
+await test('Interface : aucun accès réseau initial et secret effacé immédiatement',async()=>{
+ const f=await ui();try{assert(!f.calls.login&&!f.calls.watch&&!f.$('connect').disabled,'effet initial');const pending=f.login();assert(f.$('password').value==='','secret conservé');await pending;assert(f.$('identity').textContent.includes('coach@example.invalid')&&f.$('dashboard').hidden,'identité ou accès prématuré');f.emitAuth({...coach});assert(!f.calls.stops&&f.calls.watch===1,'notification Auth tardive interrompt la vérification')}finally{f.close()}
+});
+await test('Interface : état vide explicite et noms affichés comme texte',async()=>{
+ const f=await ui();try{await f.login();f.emit({authorized:true,athletes:[]});assert(!f.$('empty').hidden&&!f.$('dashboard').hidden,'vide');f.emit({authorized:true,athletes:[{uid:'alice',displayName:'<img src=x>'}]});assert(f.$('athletes').children.length===1&&!f.$('athletes').querySelector('img'),'injection HTML');f.emit({authorized:false,athletes:[]});assert(f.$('dashboard').hidden&&!f.$('athletes').children.length,'cache affiché')}finally{f.close()}
+});
+await test('Interface : courriel non vérifié, refus et erreur Firebase',async()=>{
+ const f=await ui();try{f.setUser({...coach,emailVerified:false});await f.login();assert(!f.calls.watch&&f.$('status').textContent.includes('non vérifiée'),'email');f.setUser(coach);await f.$('refresh').onclick();f.error({code:'permission-denied'});assert(f.$('dashboard').hidden&&f.$('status').textContent.includes('Accès refusé'),'refus');f.error({message:'SECRET'});assert(!f.$('status').textContent.includes('SECRET')&&f.$('status').textContent.includes('indisponible'),'erreur brute')}finally{f.close()}
+});
+await test('Interface : déconnexion, hors ligne et callbacks obsolètes',async()=>{
+ const f=await ui();try{await f.login();f.emit({authorized:true,athletes:[{uid:'alice',displayName:'Alice'}]});f.doc.defaultView.dispatchEvent(new Event('offline'));assert(f.$('dashboard').hidden&&!f.$('athletes').children.length,'hors ligne');f.emit({authorized:true,athletes:[{uid:'late',displayName:'Tardif'}]});assert(f.$('dashboard').hidden,'réponse obsolète');await f.$('disconnect').onclick();assert(f.calls.out===1&&!f.$('login-panel').hidden&&f.$('identity').textContent==='','déconnexion')}finally{f.close()}
+});
+await test('Isolation : aucun accès en écriture Firestore ni stockage de résultats',()=>{
+ const source=decode(SOURCES.data)+decode(SOURCES.page);assert(!/setDoc|updateDoc|deleteDoc|addDoc|writeBatch|localStorage|sessionStorage|tractions-v2|createUser|sendSignInLink/.test(source),'opération interdite');assert(decode(SOURCES.index).includes('href="coach.html"'),'lien absent');assert(!decode(SOURCES.index).includes('gstatic.com'),'CDN au démarrage du programme');
+});
+} catch(e){results.push('FAIL module : '+e.stack)} finally {urls.forEach(url=>URL.revokeObjectURL(url))}
+document.getElementById('results').textContent=results.join('\n')+'\n'+(results.some(r=>r.startsWith('FAIL'))?'FAILED':'ALL PASSED');
+</script>

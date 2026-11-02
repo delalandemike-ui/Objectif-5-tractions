@@ -1,0 +1,142 @@
+<!doctype html><meta charset="utf-8"><title>Tests multisport locaux</title><pre id="results">RUNNING</pre>
+<script type="module">
+// TEST_SOURCES
+const decode = key => new TextDecoder().decode(Uint8Array.from(atob(SOURCES[key]), c => c.charCodeAt(0)));
+const results = [], urls = [];
+const assert = (value, message) => { if (!value) throw new Error(message); };
+const blob = source => { const url = URL.createObjectURL(new Blob([source], { type: 'text/javascript' })); urls.push(url); return url; };
+async function test(name, action) { try { await action(); results.push('PASS ' + name); } catch (error) { results.push('FAIL ' + name + ': ' + error.stack); } }
+const storeUrl = blob(decode('store'));
+const { createAthleteStore, emptyProgram, emptySession } = await import(storeUrl);
+function storage() { const map = new Map(); return { getItem: key => map.get(key) ?? null, setItem: (key, value) => map.set(key, value), map }; }
+function rejects(action) { try { action(); } catch { return; } throw new Error('Refus attendu'); }
+await test('Isolation des sportifs et conservation après réouverture', () => {
+  const local = storage(), alice = createAthleteStore('alice', local), bob = createAthleteStore('bob', local);
+  alice.edit('1', { ...emptySession(), comments: 'Alice', performance: 0 });
+  assert(!bob.read().documents['1'], 'Fuite intercompte');
+  assert(createAthleteStore('alice', local).read().documents['1'].value.performance === 0, 'zéro perdu');
+});
+await test('Import sans perte et sans remplacement de tractions-v2', () => {
+  const local = storage(), original = JSON.stringify({ done: [1, 12], score: '0', notes: 'Élastique', inconnu: ['préservé'] });
+  local.setItem('tractions-v2', original); const alice = createAthleteStore('alice', local); alice.importLegacy();
+  const state = alice.read();
+  assert(local.getItem('tractions-v2') === original && state.history[0].raw === original, 'Original altéré');
+  assert(Object.keys(state.documents).length === 13 && state.documents['12'].value.completed, 'Séances perdues');
+  assert(state.documents.program.value.score === 0, 'Score zéro perdu'); rejects(() => alice.importLegacy());
+});
+await test('Import invalide et stockage saturé conservent les données', () => {
+  const local = storage(); local.setItem('tractions-v2', '{invalide'); const alice = createAthleteStore('alice', local);
+  rejects(() => alice.importLegacy()); assert(local.getItem('tractions-v2') === '{invalide', 'Effacement');
+  local.setItem = () => { throw new Error('quota'); }; rejects(() => alice.edit('1', emptySession()));
+  assert(!alice.read().documents['1'], 'Fausse sauvegarde');
+});
+await test('Concurrence entre onglets : aucun écrasement', () => {
+  const local = storage(), a = createAthleteStore('alice', local), b = createAthleteStore('alice', local);
+  a.edit('1', emptySession()); rejects(() => b.edit('2', emptySession()));
+  assert(createAthleteStore('alice', local).read().documents['1'], 'Premier onglet perdu');
+});
+await test('Panne réseau : file conservée puis reprise', async () => {
+  const alice = createAthleteStore('alice', storage()); alice.edit('1', { ...emptySession(), completed: true });
+  try { await alice.sync({ exchange: async () => { throw new Error('offline'); } }); } catch {}
+  assert(alice.read().documents['1'].dirty, 'File perdue');
+  await alice.sync({ exchange: async (uid, id, entry) => entry?.dirty ? { revision: 1 } : { remote: { value: null, revision: 0 } } });
+  assert(!alice.read().documents['1'].dirty && alice.read().documents['1'].base === 1, 'Reprise échouée');
+});
+await test('Conflit distant explicite, choix local et archivage des deux versions', async () => {
+  const alice = createAthleteStore('alice', storage()); alice.edit('program', { ...emptyProgram(), notes: 'local' });
+  await alice.sync({ exchange: async (uid, id) => id === 'program' ? { conflict: true, remote: { value: { ...emptyProgram(), notes: 'serveur' }, revision: 4 } } : { remote: { value: null, revision: 0 } } });
+  assert(alice.read().documents.program.value.notes === 'local', 'Écrasement silencieux');
+  alice.resolve('program', true); const state = alice.read();
+  assert(state.documents.program.base === 4 && state.documents.program.dirty && state.history[0].remote.value.notes === 'serveur', 'Résolution incorrecte');
+});
+await test('Choix serveur conserve la version locale en historique', async () => {
+  const alice = createAthleteStore('alice', storage()); alice.edit('1', { ...emptySession(), comments: 'local' });
+  await alice.sync({ exchange: async (uid, id) => id === '1' ? { conflict: true, remote: { value: { ...emptySession(), comments: 'distant' }, revision: 2 } } : { remote: { value: null, revision: 0 } } });
+  alice.resolve('1', false); const state = alice.read();
+  assert(state.documents['1'].value.comments === 'distant' && !state.documents['1'].dirty && state.history[0].local.comments === 'local', 'Perte de version');
+});
+await test('Édition pendant la synchronisation : nouvelle modification maintenue en attente', async () => {
+  const alice = createAthleteStore('alice', storage()); alice.edit('program', emptyProgram());
+  await alice.sync({ exchange: async (uid, id, sent) => {
+    if (id === 'program') { alice.edit('program', { ...emptyProgram(), notes: 'nouveau' }); return { revision: 1 }; }
+    return { remote: { value: null, revision: 0 } };
+  } });
+  const entry = alice.read().documents.program;
+  assert(entry.dirty && entry.base === 1 && entry.value.notes === 'nouveau', 'Édition perdue');
+});
+await test('Programme unique : les douze séances restent intégrales', () => {
+  const extract = source => source.replaceAll('\r\n', '\n').match(/const S=(\[[\s\S]*?\n\]);/)[1];
+  assert(extract(decode('index')) === extract(decode('baseline')), 'Programme modifié');
+  assert(JSON.parse(extract(decode('index'))).length === 12, 'Séances manquantes');
+});
+
+// Transactions de résultats simulées ; l'admission Spark est testée dans l'émulateur Firestore.
+await test('Transactions Firestore : création, révision et conflit sans écrasement', async () => {
+  const records = new Map();
+  const snapshot = ref => ({exists:()=>records.has(ref),data:()=>records.get(ref)});
+  globalThis.remoteContext = { db: {}, sdk: {
+    doc:(db,path)=>path, getDocFromServer:async ref=>snapshot(ref),
+    runTransaction:async (db,action)=>action({get:async ref=>snapshot(ref),set:(ref,value)=>records.set(ref,value)}),
+    serverTimestamp:()=> 'server timestamp', Timestamp:{fromMillis:n=>({toMillis:()=>n})}
+  }};
+  const source = decode('remote').replace(/^import .*;\r?\n/gm, '');
+  const {createAthleteData} = await import(blob("const PROGRAM='tractions-12-v1', cloud=async()=>globalThis.remoteContext;\n" + source));
+  const remote = createAthleteData(), path = 'athletes/alice/programs/tractions-12-v1/sessions/1';
+  const local = {dirty:true,base:0,value:{...emptySession(),performance:0,completed:true,completedAt:1000}};
+  const first = await remote.exchange('alice','1',local);
+  assert(first.revision === 1 && records.get(path).performance === 0 && records.get(path).completedAt.toMillis() === 1000,'Création ou horodatage');
+  const conflict = await remote.exchange('alice','1',{...local,value:{...local.value,performance:3}});
+  assert(conflict.conflict && conflict.remote.revision === 1 && records.get(path).performance === 0,'Écrasement concurrent');
+  const rows = await remote.readAthlete('alice'); assert(rows['1'].value.completedAt === 1000 && rows.program.revision === 0,'Lecture coach');
+});
+await test('Compilation des modules Firestore et de gestion coach', async () => {
+  for (const key of ['cloud','management']) await import(blob(decode(key).replace(/^import .*;\r?\n/gm,'')));
+});
+async function athleteUI() {
+  const frame = document.createElement('iframe'); document.body.append(frame);
+  const module = blob(decode('page')
+    .replace("import { authClient as auth } from './auth.js';", 'const auth = globalThis.fakeAuth;')
+    .replace("from './athlete-store.js'", `from '${storeUrl}'`)
+    .replace("import { createAthleteData } from './athlete-data.js';", 'const createAthleteData = () => globalThis.fakeData;')
+    .replace("import { accessAction } from './invitations.js';", 'const accessAction = async () => { throw Error("Service à configurer"); };'));
+  const setup = `<script>
+  const entries = new Map();
+  Object.defineProperty(window, 'localStorage', { value: { get length(){return entries.size}, key:i=>[...entries.keys()][i], getItem:key=>entries.get(key)??null, setItem:(key,value)=>entries.set(key,value) } });
+  window.fakeAuth = { signInWithPassword: async email=>({uid:email.startsWith('bob')?'bob':'alice',email,emailVerified:true}),signOut:async()=>{} };
+  window.fakeData = { exchange:async()=>{throw Error('Hors connexion simulé')} };
+  window.fetch=async()=>({ok:true,text:async()=>new TextDecoder().decode(Uint8Array.from(atob('${SOURCES.index}'),c=>c.charCodeAt(0)))});
+  Object.defineProperty(navigator,'serviceWorker',{value:undefined});
+  history.replaceState = () => {};
+  <\/script>`;
+  const html = decode('layout').replace('<script type="module" src="js/athlete-page.js"><\/script>', setup + `<script type="module" src="${module}"><\/script>`);
+  await new Promise(resolve => { frame.onload = resolve; frame.srcdoc = html; });
+  const $ = id => frame.contentDocument.getElementById(id);
+  for (let i = 0; i < 100 && $('training').options.length !== 12; i++) await new Promise(resolve => setTimeout(resolve, 10));
+  const login = async email => { $('email').value = email; $('password').value = 'fictif'; await $('login').onsubmit({preventDefault(){}}); };
+  return { frame, $, login, close:()=>frame.remove() };
+}
+await test('Interface sportif : douze séances, performances zéro et commentaires sauvegardés', async () => {
+  const f = await athleteUI(); try {
+    assert(f.$('training').options.length === 12, 'Séances non chargées');
+    await f.login('alice@example.invalid'); assert(!f.$('workspace').hidden && f.$('password').value === '', 'Connexion ou secret');
+    f.$('training').value = '12'; f.$('training').onchange();
+    assert(f.$('exercises').textContent.includes('TEST : 5'), 'Contenu séance absent');
+    f.$('performance').value = '0'; f.$('comments').value = 'Élastique léger'; f.$('completed').checked = true;
+    await f.$('save-session').onclick();
+    const state = JSON.parse(f.frame.contentWindow.localStorage.getItem('tractions-athlete-v1:alice'));
+    assert(state.documents['12'].value.performance === 0 && state.documents['12'].value.completed && state.documents['12'].value.comments === 'Élastique léger', 'Résultat perdu');
+  } finally { f.close(); }
+});
+await test('Interface sportif : changement de compte, reprise locale et file après erreur réseau', async () => {
+  const f = await athleteUI(); try {
+    await f.login('alice@example.invalid'); f.$('athlete-notes').value = 'notes Alice'; await f.$('save-program').onclick();
+    await f.$('logout').onclick(); assert(f.$('workspace').hidden, 'Résultats affichés après fermeture');
+    await f.login('bob@example.invalid'); assert(f.$('athlete-notes').value === '', 'Données Alice visibles à Bob');
+    await f.$('logout').onclick();
+    f.$('local-accounts').value = 'alice'; await f.$('resume').onclick();
+    assert(f.$('athlete-notes').value === 'notes Alice' && f.$('progress').textContent.includes('1 modification'), 'Reprise locale perdue');
+  } finally { f.close(); }
+});
+urls.forEach(url => URL.revokeObjectURL(url));
+document.getElementById('results').textContent = results.join('\n') + '\n' + (results.some(row => row.startsWith('FAIL')) ? 'FAILED' : 'ALL PASSED');
+</script>

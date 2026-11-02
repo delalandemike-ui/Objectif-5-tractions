@@ -2,6 +2,8 @@
 node_modules/
 test-results/
 .firebase/
+.tools/
+_site/
 
 # Local environment configuration; keep fictitious templates.
 .env

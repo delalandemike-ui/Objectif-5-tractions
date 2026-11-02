@@ -27,8 +27,8 @@ try{
  }
  await test('Import inactif et absence de couplage/stockage/privilège',()=>{
   const html=decode(SOURCES.index),sw=decode(SOURCES.sw);
-  assert(!html.includes('auth.js')&&!sw.includes('auth.js'),'module intégré');
-  assert(!/localStorage|sessionStorage|tractions-v2|firebase-firestore|setCustomUserClaims|createUserWith|signInAnonymously|console\./.test(source),'effet interdit');
+  assert(!html.includes('auth.js')&&sw.includes('./js/auth.js')&&!sw.includes('gstatic.com'),'chargement Auth implicite ou cache distant');
+  assert(!/localStorage|sessionStorage|tractions-v2|firebase-firestore|setCustomUserClaims|signInAnonymously|console\./.test(source),'effet interdit');
   assert(typeof m.authClient.sendSignInLink==='function','client manquant');
   assert(m.AUTH_RETURN_URL==='https://delalandemike-ui.github.io/Objectif-5-tractions/','URL retour');
  });
@@ -36,12 +36,20 @@ try{
   const f=fixture();assert(f.calls.load===0,'chargement automatique');
   await Promise.all([f.client.initialize(),f.client.initialize()]);
   assert(f.calls.load===1&&f.calls.init===1&&!f.calls.send&&!f.calls.complete,'initialisation doublée ou connexion automatique');
+  let registrations=0,verifications=0;
+  f.sdk.createUserWithEmailAndPassword=async(a,e,p)=>{registrations++;f.auth.currentUser={uid:'new-test',email:e,emailVerified:false};return {user:f.auth.currentUser}};
+  f.sdk.sendEmailVerification=async()=>{verifications++};
+  assert(!registrations&&!verifications,'inscription automatique');
+  const created=await f.client.register('new@example.invalid','fictif-123');
+  assert(registrations===1&&verifications===1&&created.emailVerified===false,'inscription explicite ou vérification');
  });
  await test('Envoi uniquement explicite, URL fixe et adresse non stockée',async()=>{
   const f=fixture();await f.client.sendSignInLink(' '+email+' ');
   assert(f.calls.send===1&&f.calls.sent.e===email,'adresse');
   assert(f.calls.sent.settings.url===m.AUTH_RETURN_URL&&f.calls.sent.settings.handleCodeInApp===true,'paramètres');
   assert(!f.calls.complete,'connexion à l’envoi');
+  await f.client.sendSignInLink(email,{athlete:true});
+  assert(f.calls.sent.settings.url==='https://delalandemike-ui.github.io/Objectif-5-tractions/athlete.html','retour sportif incorrect');
  });
  await test('Adresse obligatoire et liens étrangers/ambigus rejetés avant chargement',async()=>{
   const f=fixture();
