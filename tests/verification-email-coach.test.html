@@ -1,0 +1,75 @@
+<!doctype html><meta charset="utf-8"><pre id="results">Tests en cours…</pre>
+<script type="module">
+// TEST_SOURCES
+const decode=s=>new TextDecoder().decode(Uint8Array.from(atob(s),c=>c.charCodeAt(0)));
+const source=decode(SOURCES.module),layout=decode(SOURCES.page).replace(/<script type="module">[\s\S]*?<\/script>/,'');
+const results=[];
+function assert(ok,message){if(!ok)throw Error(message)}
+async function test(name,run){try{await run();results.push('PASS '+name)}catch(e){results.push('FAIL '+name+': '+e.message)}}
+const url=URL.createObjectURL(new Blob([source],{type:'text/javascript'}));
+try{
+ const {mountVerificationPage}=await import(url);
+ async function fixture(origin={hostname:'127.0.0.1',protocol:'http:'}, unavailable=false){
+  const frame=document.createElement('iframe');document.body.append(frame);
+  await new Promise(resolve=>{frame.onload=resolve;frame.srcdoc=layout});
+  const d=frame.contentDocument,$=id=>d.getElementById(id),calls={load:0,login:0,send:0,reload:0,token:0,out:0},auth={currentUser:null};let time=1000;
+  const sdk={
+   async signInWithEmailAndPassword(a,email,password){calls.login++;assert(password.length===20,'mot de passe non transmis');auth.currentUser={email,emailVerified:false}},
+   async sendEmailVerification(){calls.send++},
+   async reload(){calls.reload++},
+   async getIdToken(u,force){assert(force===true,'jeton non forcé');calls.token++},
+   async signOut(){calls.out++;auth.currentUser=null}
+  };
+  Object.defineProperty(frame.contentWindow,'localStorage',{get(){throw Error('stockage interdit')}});
+  Object.defineProperty(frame.contentWindow,'sessionStorage',{get(){throw Error('stockage interdit')}});
+  const control=mountVerificationPage(d,{origin,clock:()=>time,load:async()=>{calls.load++;if(unavailable)throw Error('SDK unavailable');return {sdk,auth}}});
+  const login=()=>{$('email').value='coach@example.invalid';$('password').value='x'.repeat(20);return $('login').onsubmit({preventDefault(){}})};
+  const confirm=()=>{$('confirm').checked=true;$('confirm').onchange()};
+  return {$,calls,sdk,auth,control,login,confirm,advance:()=>time+=120001,close:()=>{control?.dispose();frame.remove()}};
+ }
+ await test('Page distante bloquée, chargement et envoi inactifs',async()=>{
+  const f=await fixture({hostname:'example.invalid',protocol:'https:'});try{assert(!f.control&&f.calls.load===0&&f.$('connect').disabled,'non bloqué')}finally{f.close()}
+ });
+ await test('Page locale sans effet automatique et champ masqué',async()=>{
+  const f=await fixture();try{assert(f.calls.load===0&&!f.calls.send&&!f.$('connect').disabled,'effet automatique');assert(f.$('password').type==='password','champ non masqué');assert(!/localStorage|sessionStorage|console\.|createUser|firebase-firestore/.test(source),'API interdite')}finally{f.close()}
+ });
+ await test('Firebase indisponible : formulaire visible et nouvelle tentative possible',async()=>{
+  const f=await fixture(undefined,true);try{
+   await f.login();
+   assert(f.calls.load===1&&f.calls.login===0&&f.calls.send===0,'appel Firebase inattendu');
+   assert(f.$('login').getBoundingClientRect().height>0&&f.$('email').getBoundingClientRect().height>0,'formulaire invisible');
+   assert(!f.$('connect').disabled&&f.$('password').value===''&&f.$('send').disabled,'état après indisponibilité');
+   assert(f.$('status').textContent.length>0,'message absent');
+  }finally{f.close()}
+ });
+ await test('Connexion seule et effacement immédiat du champ',async()=>{
+  const f=await fixture();try{const pending=f.login();assert(f.$('password').value==='','champ conservé');await pending;assert(f.calls.login===1&&f.calls.send===0&&f.$('password').disabled,'connexion');assert(f.$('send').disabled,'confirmation absente')}finally{f.close()}
+ });
+ await test('Confirmation, double clic, délai et délai conservé après déconnexion',async()=>{
+  const f=await fixture();try{
+   await f.login();await f.$('send').onclick();assert(f.calls.send===0,'envoi sans accord');
+   f.confirm();const pending=f.$('send').onclick();await f.$('send').onclick();await pending;
+   assert(f.calls.send===1&&!f.$('confirm').checked,'double envoi');
+   f.confirm();await f.$('send').onclick();assert(f.calls.send===1,'délai ignoré');
+   await f.$('disconnect').onclick();await f.login();f.confirm();await f.$('send').onclick();assert(f.calls.send===1,'déconnexion contourne délai');
+   f.advance();f.confirm();await f.$('send').onclick();assert(f.calls.send===2,'envoi volontaire après délai');
+  }finally{f.close()}
+ });
+ await test('Échec réseau d’envoi : pas de rejeu et délai appliqué',async()=>{
+  const f=await fixture();try{await f.login();f.sdk.sendEmailVerification=async()=>{f.calls.send++;throw {code:'auth/network-request-failed'}};f.confirm();await f.$('send').onclick();f.confirm();await f.$('send').onclick();assert(f.calls.send===1&&f.$('send').disabled,'rejeu')}finally{f.close()}
+ });
+ await test('Reload, état vérifié et renouvellement du jeton',async()=>{
+  const f=await fixture();try{await f.login();await f.$('refresh').onclick();assert(f.calls.reload===1&&f.calls.token===0,'état initial');f.sdk.reload=async()=>{f.calls.reload++;f.auth.currentUser.emailVerified=true};await f.$('refresh').onclick();assert(f.calls.token===1&&f.$('verified').textContent.includes('Adresse vérifiée')&&f.$('send').disabled,'vérification');assert(f.calls.send===0,'envoi implicite')}finally{f.close()}
+ });
+ await test('Déconnexion : session et champs vidés',async()=>{
+  const f=await fixture();try{await f.login();await f.$('disconnect').onclick();assert(f.calls.out===1&&!f.auth.currentUser&&f.$('email').value===''&&f.$('password').value==='','session conservée')}finally{f.close()}
+ });
+ await test('Erreur de connexion contrôlée sans détail sensible',async()=>{
+  const f=await fixture();try{f.sdk.signInWithEmailAndPassword=async()=>{throw {code:'auth/invalid-credential',message:'DETAIL_CONFIDENTIEL'}};await f.login();assert(!f.$('status').textContent.includes('DETAIL_CONFIDENTIEL')&&f.$('password').value===''&&!f.$('connect').disabled,'erreur exposée')}finally{f.close()}
+ });
+ await test('Opération en cours : connexion unique et aucune déconnexion annoncée',async()=>{
+  const f=await fixture();try{let release;f.sdk.signInWithEmailAndPassword=async()=>{f.calls.login++;await new Promise(resolve=>release=resolve);f.auth.currentUser={email:'coach@example.invalid',emailVerified:false}};const first=f.login();await Promise.resolve();await Promise.resolve();await f.login();assert(f.$('disconnect').disabled,'déconnexion pendant connexion');release();await first;assert(f.calls.login===1&&f.calls.out===0,'opération concurrente')}finally{f.close()}
+ });
+}catch(e){results.push('FAIL module : '+e.stack)}finally{URL.revokeObjectURL(url)}
+document.getElementById('results').textContent=results.join('\n')+'\n'+(results.some(r=>r.startsWith('FAIL'))?'FAILED':'ALL PASSED');
+</script>

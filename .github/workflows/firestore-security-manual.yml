@@ -107,7 +107,7 @@ jobs:
             echo "Configuration : $CONFIG"
             echo "Controles statiques : $STATIC (ne prouvent pas la securite)"
             echo "Moteur Firestore, 24 scenarios attendus : $FIRESTORE"
-            echo "Chromium, 24 groupes attendus : $REGRESSION"
+            echo "Chromium, 34 groupes attendus (24 existants + 10 verification e-mail simulee) : $REGRESSION"
             echo 'Consulter les journaux pour le nombre reel de tests executes. Un echec de compilation ne signifie pas que les 24 scenarios ont ete executes.'
             echo 'Aucun deploiement ni compte reel ; projet demo uniquement.'
           } >> "$GITHUB_STEP_SUMMARY"

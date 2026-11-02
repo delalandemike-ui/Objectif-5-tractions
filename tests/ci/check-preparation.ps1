@@ -19,4 +19,14 @@ Check ($manifest.private -eq $true -and $manifest.engines.node -eq '>=24.12.0') 
 Check ($manifest.devDependencies.'@firebase/rules-unit-testing' -eq '6.0.0' -and $manifest.devDependencies.firebase -eq '13.1.0') 'Compatible direct Firebase test versions pinned'
 Check ($browser.Contains("file: 'regression.html', expected: 7") -and $browser.Contains("file: 'firebase-config.html', expected: 7") -and $browser.Contains("file: 'auth.html', expected: 10")) 'Existing 24 browser groups reused'
 Check ($browser.Contains('route => route.abort()') -and $browser.Contains("serviceWorkers: 'block'")) 'Browser tests block external HTTP and real workers'
+$fixtures = @('regression.html','firebase-config.html','auth.html','verification-email-coach.test.html')
+$counts = @(7,7,10,10)
+for ($i=0; $i -lt $fixtures.Count; $i++) {
+    $fixture = [IO.File]::ReadAllText((Join-Path $root ('tests/' + $fixtures[$i])))
+    Check (([regex]::Matches($fixture, '(?m)^\s*await test\(')).Count -eq $counts[$i]) ("Browser groups prepared: " + $fixtures[$i] + ' = ' + $counts[$i])
+}
+Check ($browser.Contains("file: 'verification-email-coach.test.html', expected: 10") -and $yaml.Contains('34 groupes attendus (24 existants + 10 verification e-mail simulee)')) 'Runner and workflow summary agree on 34 groups'
+foreach ($path in @('index.html','sw.js','js/auth.js','js/firebase-config.js','tests/email-verification-controller.js','tests/verification-email-coach.html','tests/firestore/security.test.mjs','firebase/firestore.rules','firebase/settings-access.example.json','tests/ci/check-workflow.mjs')) {
+    Check (Test-Path -LiteralPath (Join-Path $root $path) -PathType Leaf) ("Required source exists: " + $path)
+}
 Write-Output 'STATIC ONLY: no YAML engine, Node, browser CI or Firestore engine was executed by this script.'

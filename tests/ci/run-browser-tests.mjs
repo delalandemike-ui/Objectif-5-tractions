@@ -17,7 +17,11 @@ const fixtures = [
     baselineSw: encode(execFileSync('git', ['show', 'HEAD:sw.js'], { cwd: root, encoding: 'utf8' }))
   } },
   { name: 'firebase-simule', file: 'firebase-config.html', expected: 7, sources: { index, sw, module: encode(await read('js/firebase-config.js')) } },
-  { name: 'auth-simule', file: 'auth.html', expected: 10, sources: { index, sw, module: encode(await read('js/auth.js')) } }
+  { name: 'auth-simule', file: 'auth.html', expected: 10, sources: { index, sw, module: encode(await read('js/auth.js')) } },
+  { name: 'verification-email-simulee', file: 'verification-email-coach.test.html', expected: 10, sources: {
+    module: encode(await read('tests/email-verification-controller.js')),
+    page: encode(await read('tests/verification-email-coach.html'))
+  } }
 ];
 const temp = await mkdtemp(join(tmpdir(), 'tractions-ci-'));
 await mkdir(join(root, 'test-results'), { recursive: true });
