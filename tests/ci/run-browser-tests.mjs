@@ -22,7 +22,8 @@ const fixtures = [
     module: encode(await read('tests/email-verification-controller.js')),
     page: encode(await read('tests/verification-email-coach.html'))
   } },
-  { name: 'coach-simule', file: 'coach.test.html', expected: 12, sources: {
+  { name: 'coach-simule', file: 'coach.test.html', expected: 15, sources: {
+    invitations: encode(await read('js/invitations.js')), management: encode(await read('js/coach-management.js')),
     auth: encode(await read('js/auth.js')), data: encode(await read('js/coach-data.js')),
     page: encode(await read('js/coach-page.js')), layout: encode(await read('coach.html')), index
   } },

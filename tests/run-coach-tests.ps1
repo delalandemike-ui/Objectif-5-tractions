@@ -12,6 +12,8 @@ $sources = @{
     layout = Encode-Source (Join-Path $root 'coach.html')
     index = Encode-Source (Join-Path $root 'index.html')
     sw = Encode-Source (Join-Path $root 'sw.js')
+    invitations = Encode-Source (Join-Path $root 'js/invitations.js')
+    management = Encode-Source (Join-Path $root 'js/coach-management.js')
 } | ConvertTo-Json -Compress
 $runner = [IO.File]::ReadAllText((Join-Path $PSScriptRoot 'coach.test.html')).Replace('// TEST_SOURCES', "const SOURCES=$sources;")
 $tempPath = Join-Path ([IO.Path]::GetTempPath()) ('tractions-coach-tests-' + [guid]::NewGuid())

@@ -29,6 +29,44 @@ function dataFixture(){
  const client=createCoachDataClient({load:async()=>{calls.load++;return {sdk,db:{}}}});return {client,calls,sdk,emit:(ids=[],fromCache=false)=>next({metadata:{fromCache},docs:ids.map(id=>({id}))}),error:e=>error(e)};
 }
 const coach={uid:'coach',email:'coach@example.invalid',emailVerified:true};
+const {accessAction}=await import(blob(decode(SOURCES.invitations).replace("import { cloud } from './cloud.js';", 'const cloud = () => { throw Error("Réseau interdit"); };')));
+const {createCoachManagement}=await import(blob(decode(SOURCES.management).replace("import { accessAction } from './invitations.js';", 'const accessAction = (...args) => globalThis.invitationAction(...args);').replace("import { createAthleteData } from './athlete-data.js';", 'const createAthleteData = () => ({});')));
+await test('Invitation : adresse valide, écriture conforme Spark et liste filtrée',async()=>{
+ let written,filter;const sdk={collection:()=> 'invitations',doc:()=>({id:'fictive'}),serverTimestamp:()=> 'SERVER',Timestamp:{fromMillis:n=>n},async setDoc(ref,value){written=value},where:(...args)=>(filter=args),query:()=> 'query',async getDocsFromServer(){return {docs:[]}}};
+ const options={load:async()=>({sdk,db:{}})};
+ assert((await accessAction(coach,'createInvitation',{email:' Sportif@exemple.fr '},options)).id==='fictive','création');
+ assert(written.email==='sportif@exemple.fr'&&written.coachUid==='coach'&&written.status==='pending'&&written.createdAt==='SERVER','champs');
+ assert(written.expiresAt>Date.now()&&written.expiresAt<Date.now()+8*86400000,'expiration');
+ await accessAction(coach,'listInvitations',{},options);assert(filter.join('/')==='coachUid/==/coach','filtre');
+});
+await test('Invitation : délais SDK, écriture, lecture et refus explicites ; pas de double écriture',async()=>{
+ const never=()=>new Promise(()=>{});let writes=0;
+ const sdk={collection:()=>'',doc:()=>({id:'pending'}),serverTimestamp:()=>0,Timestamp:{fromMillis:n=>n},setDoc(){writes++;return never()},query:()=>'',where:()=>'',getDocsFromServer:never};
+ const options={load:async()=>({sdk,db:{}}),timeoutMs:5};
+ for(const [action,input,opts,fragment] of [
+ ['listInvitations',{}, {load:never,timeoutMs:5},'initialisation'],
+ ['createInvitation',{email:'pending@exemple.fr'},options,'setDoc'],
+ ['createInvitation',{email:'pending@exemple.fr'},options,'setDoc'],
+ ['listInvitations',{},options,'getDocsFromServer']]){
+  try{await accessAction(coach,action,input,opts);throw Error('succès inattendu')}catch(e){assert(e.code==='access/timeout'&&e.message.includes(fragment),'délai '+fragment)}
+ }
+ assert(writes===1,'double création');
+ sdk.getDocsFromServer=async()=>{throw {code:'permission-denied'}};
+ try{await accessAction(coach,'listInvitations',{},options);throw Error('succès inattendu')}catch(e){assert(e.message.includes('Accès refusé')&&e.message.includes('getDocsFromServer'),'refus')}
+});
+await test('Gestion : validation, refus, reprise et création confirmée avant échec de lecture',async()=>{
+ const root=document.createElement('div');document.body.append(root);
+ try{
+  createCoachManagement(root)(coach,[]);
+  const email=root.querySelector('input'),buttons=()=>[...root.querySelectorAll('button')],status=root.querySelector('[role=status]');
+  await buttons()[0].onclick();assert(status.textContent.includes('valide')&&buttons().every(b=>!b.disabled),'validation');
+  email.value='sportif@exemple.fr';globalThis.invitationAction=async()=>{throw Error('Accès refusé par Firebase')};
+  await buttons()[0].onclick();assert(status.textContent.includes('refusé')&&email.value&&buttons().every(b=>!b.disabled),'reprise');
+  globalThis.invitationAction=async(u,action)=>{if(action==='listInvitations')throw Error('Lecture indisponible');return {id:'fictive'}};
+  await buttons()[0].onclick();assert(status.textContent.includes('Invitation créée')&&status.textContent.includes('Ne la recréez pas')&&!email.value,'confirmation');
+  globalThis.invitationAction=async()=>({invitations:[]});await buttons()[1].onclick();assert(status.textContent==='Aucune invitation.'&&buttons().every(b=>!b.disabled),'actualisation');
+ }finally{root.remove();delete globalThis.invitationAction}
+});
 await test('Données : coach confirmé même sur liste vide et jamais depuis le cache',async()=>{
  const f=dataFixture(),states=[];const stop=await f.client.watch(coach,s=>states.push(s),e=>{throw e});f.emit([],true);assert(!states.at(-1).authorized,'cache autorisé');f.emit();await tick();assert(states.at(-1).authorized&&states.at(-1).athletes.length===0,'vide');assert(f.calls.paths[0]==='coaches/coach/athletes'&&!f.calls.paths.includes('settings/access'),'chemin');stop();
 });

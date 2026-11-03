@@ -1,8 +1,35 @@
 import { cloud } from './cloud.js';
+// Réutiliser une écriture encore en attente après un délai dépassé.
+const pendingCreations = new Map();
 // Le lien localise l'invitation ; l'identité vérifiée et le coach décident de l'accès.
-export async function accessAction(user, action, input = {}) {
+export async function accessAction(user, action, input = {}, { load = cloud, timeoutMs = 15000 } = {}) {
+  let timer, operation = 'initialisation Firebase';
+  const work = executeAccessAction(user, action, input, async () => {
+    const context = await load();
+    operation = action === 'createInvitation' ? 'création de l’invitation (setDoc)'
+      : action === 'listInvitations' ? 'lecture des invitations (getDocsFromServer)' : action;
+    return context;
+  });
+  try {
+    return await Promise.race([work, new Promise((resolve, reject) => {
+      timer = setTimeout(() => reject(Object.assign(new Error(
+        `Firebase ne répond pas : ${operation}. Vérifiez votre connexion puis actualisez les invitations.${action === 'createInvitation' ? ' La création peut encore aboutir : vérifiez la liste avant de recréer une invitation.' : ''}`
+      ), { code: 'access/timeout', operation })), timeoutMs);
+    })]);
+  } catch (error) {
+    if (['permission-denied', 'firestore/permission-denied'].includes(error?.code)) {
+      throw Object.assign(new Error(`Accès refusé par Firebase : ${operation}. Vérifiez que le compte coach est toujours autorisé.`), { code: error.code, operation, cause: error });
+    }
+    if (['unavailable', 'deadline-exceeded'].includes(error?.code)) {
+      throw Object.assign(new Error(`Firebase indisponible : ${operation}. Vérifiez votre connexion puis actualisez les invitations avant de réessayer.`), { code: error.code, operation, cause: error });
+    }
+    throw error;
+  } finally { clearTimeout(timer); }
+}
+
+async function executeAccessAction(user, action, input, load) {
   if (!user?.uid || !user.emailVerified) throw new Error('Adresse vérifiée requise.');
-  const { sdk, db } = await cloud();
+  const { sdk, db } = await load();
   const invitation = id => {
     if (typeof id !== 'string' || !/^[\w-]{1,128}$/.test(id)) throw new Error('Invitation invalide.');
     return sdk.doc(db, 'invitations', id);
@@ -10,9 +37,16 @@ export async function accessAction(user, action, input = {}) {
   if (action === 'createInvitation') {
     const email = String(input.email || '').trim().toLowerCase();
     if (email.length > 254 || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) throw new Error('Adresse invalide.');
+    const key = `${user.uid}:${email}`;
+    if (pendingCreations.has(key)) return pendingCreations.get(key);
     const ref = sdk.doc(sdk.collection(db, 'invitations'));
-    await sdk.setDoc(ref, { email, coachUid: user.uid, status: 'pending', createdAt: sdk.serverTimestamp(), expiresAt: sdk.Timestamp.fromMillis(Date.now() + 7 * 86400000) });
-    return { id: ref.id };
+    const write = (async () => {
+      await sdk.setDoc(ref, { email, coachUid: user.uid, status: 'pending', createdAt: sdk.serverTimestamp(), expiresAt: sdk.Timestamp.fromMillis(Date.now() + 7 * 86400000) });
+      return { id: ref.id };
+    })();
+    pendingCreations.set(key, write);
+    try { return await write; }
+    finally { if (pendingCreations.get(key) === write) pendingCreations.delete(key); }
   }
   if (action === 'listInvitations') {
     const rows = await sdk.getDocsFromServer(sdk.query(sdk.collection(db, 'invitations'), sdk.where('coachUid', '==', user.uid)));

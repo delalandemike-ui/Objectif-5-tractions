@@ -12,14 +12,24 @@ export function createCoachManagement(root) {
     const invitationUrl = id => { const url = new URL('athlete.html', doc.baseURI); url.searchParams.set('invitation', id); return url.href; };
     const heading = doc.createElement('h2'); heading.textContent = 'Invitations et suivi'; root.append(heading);
     const status = doc.createElement('p'); status.setAttribute('role', 'status');
-    const email = doc.createElement('input'); email.type = 'email'; email.placeholder = 'sportif@exemple.fr'; email.setAttribute('aria-label', 'E-mail du sportif');
+    const email = doc.createElement('input'); email.type = 'email'; email.required = true; email.maxLength = 254; email.placeholder = 'sportif@exemple.fr'; email.setAttribute('aria-label', 'E-mail du sportif');
+    let busy = false;
     const invitations = doc.createElement('ul'), details = doc.createElement('div');
     function button(label, action, target = root) {
       const control = doc.createElement('button'); control.textContent = label; control.type = 'button';
       control.onclick = async () => {
-        control.disabled = true; status.textContent = 'Opération en cours…';
-        try { await action(); } catch (error) { if (current === generation) status.textContent = error.message || 'Service indisponible.'; }
-        finally { control.disabled = false; }
+        if (busy || current !== generation) return;
+        busy = true;
+        root.querySelectorAll('button').forEach(button => { button.disabled = true; });
+        status.textContent = 'Opération en cours…';
+        try {
+          await action();
+          if (current === generation && status.textContent === 'Opération en cours…') status.textContent = 'Opération terminée.';
+        } catch (error) { if (current === generation) status.textContent = error.message || 'Service indisponible. Réessayez.'; }
+        finally {
+          busy = false;
+          if (current === generation) root.querySelectorAll('button').forEach(button => { button.disabled = false; });
+        }
       }; target.append(control); return control;
     }
     async function refreshInvitations() {
@@ -42,15 +52,29 @@ export function createCoachManagement(root) {
     }
     root.append(email);
     button('Créer une invitation à transmettre', async () => {
-      if (!email.reportValidity() || !email.value) return;
-      await callAccess('createInvitation', { email: email.value }); email.value = ''; await refreshInvitations();
+      email.value = email.value.trim();
+      if (!email.reportValidity()) { status.textContent = 'Saisissez une adresse e-mail valide.'; return; }
+      await callAccess('createInvitation', { email: email.value });
+      if (current !== generation) return;
+      email.value = '';
+      try { await refreshInvitations(); }
+      catch (error) { throw new Error('Invitation créée, mais liste non actualisée. Ne la recréez pas. ' + error.message); }
     });
     button('Actualiser les invitations', refreshInvitations);
     root.append(invitations);
     for (const athlete of athletes) {
       const line = doc.createElement('p'), name = doc.createElement('span'); name.textContent = athlete.displayName + ' '; line.append(name);
       button('Voir les performances', async () => {
-        const rows = await data.readAthlete(athlete.uid);
+        let timer, rows;
+        try {
+          rows = await Promise.race([
+            data.readAthlete(athlete.uid),
+            new Promise((resolve, reject) => { timer = setTimeout(() => reject(new Error('Firebase ne répond pas à la lecture des performances. Vérifiez votre connexion puis réessayez.')), 15000); })
+          ]);
+        } catch (error) {
+          if (['permission-denied', 'firestore/permission-denied'].includes(error?.code)) throw new Error('Accès aux performances refusé par Firebase. Actualisez votre accès coach.');
+          throw error;
+        } finally { clearTimeout(timer); }
         if (current !== generation) return;
         details.replaceChildren();
         const title = doc.createElement('h3'); title.textContent = athlete.displayName; details.append(title);
