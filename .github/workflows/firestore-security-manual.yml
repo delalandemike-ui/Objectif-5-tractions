@@ -72,14 +72,14 @@ jobs:
         shell: pwsh
         run: ./tests/firestore/check-preparation.ps1
 
-      - name: Executer les 31 scenarios dans Firestore Emulator
+      - name: Executer les scenarios de securite et de coaching dans Firestore Emulator
         id: firestore
         if: ${{ !cancelled() && steps.config.outcome == 'success' }}
         working-directory: .
         shell: bash
         run: |
           set -o pipefail
-          ./tests/node_modules/.bin/firebase emulators:exec --non-interactive --project demo-objectif-5-tractions --config firebase.json --only firestore 'node --test --test-concurrency=1 --test-reporter=tap tests/firestore/security.test.mjs' 2>&1 | tee test-results/firestore.log
+          ./tests/node_modules/.bin/firebase emulators:exec --non-interactive --project demo-objectif-5-tractions --config firebase.json --only firestore 'node --test --test-concurrency=1 --test-reporter=tap tests/firestore/security.test.mjs tests/firestore/coaching.test.mjs' 2>&1 | tee test-results/firestore.log
 
       - name: Installer Chromium dans le runner temporaire
         id: browser

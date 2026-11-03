@@ -1,4 +1,4 @@
-// Version Spark validée dans Emulator Suite (31 scénarios). Publication sur autorisation uniquement.
+// PROPOSITION coaching Spark : tests locaux uniquement. Aucune publication automatique.
 rules_version = '2';
 service cloud.firestore {
   match /databases/{database}/documents {
@@ -113,7 +113,8 @@ service cloud.firestore {
     match /settings/{id} { allow read, write: if false; }
     match /invitations/{id} {
       allow get: if coach() || (verified() && resource.data.email == request.auth.token.email.lower());
-      allow list: if coach() && resource.data.coachUid == request.auth.uid;
+      allow list: if (coach() && resource.data.coachUid == request.auth.uid)
+        || (verified() && resource.data.email == request.auth.token.email.lower());
       allow create: if coach()
         && request.resource.data.keys().hasOnly(['email', 'coachUid', 'status', 'createdAt', 'expiresAt'])
         && request.resource.data.coachUid == request.auth.uid
@@ -172,14 +173,54 @@ service cloud.firestore {
     }
     // Seul le coach peut approuver et révoquer, avec écritures atomiques liées.
     match /athletes/{uid} {
-      allow get: if canRead(uid);
+      // Seul le statut de son propre compte reste lisible après révocation.
+      allow get: if canRead(uid) || (verified() && request.auth.uid == uid);
       allow create: if admissionApproved(uid);
       allow update: if admissionApproved(uid) || admissionRevoked(uid);
       allow list, delete: if false;
+      match /messages/{messageId} {
+        function participant() {
+          let admission = get(/databases/$(database)/documents/athletes/$(uid)).data;
+          return assigned(uid) || (owner(uid)
+            && designatedCoach(admission.invitedBy)
+            && get(/databases/$(database)/documents/settings/access).data.active == true
+            && get(/databases/$(database)/documents/coaches/$(admission.invitedBy)/athletes/$(uid)).data.status == 'active');
+        }
+        allow get: if participant();
+        allow list: if participant() && request.query.limit != null && request.query.limit <= 50;
+        allow create: if participant()
+          && request.resource.data.keys().hasAll(['senderUid', 'text', 'createdAt'])
+          && request.resource.data.keys().hasOnly(['senderUid', 'text', 'createdAt'])
+          && request.resource.data.senderUid == request.auth.uid
+          && request.resource.data.text is string && request.resource.data.text.size() > 0
+          && request.resource.data.text.size() <= 2000
+          && request.resource.data.createdAt == request.time;
+        allow update, delete: if false;
+      }
       match /programs/{programId} {
         allow get: if programId == 'tractions-12-v1' && canRead(uid);
         allow create, update: if programId == 'tractions-12-v1' && owner(uid) && validProgram();
         allow list, delete: if false;
+        match /history/{historyId} {
+          function validEntry() {
+            let d = request.resource.data;
+            let path = /databases/$(database)/documents/athletes/$(uid)/programs/$(programId);
+            let target = d.documentId == 'program' ? getAfter(path).data
+              : getAfter(/databases/$(database)/documents/athletes/$(uid)/programs/$(programId)/sessions/$(d.documentId)).data;
+            return d.keys().hasAll(['documentId', 'revision', 'value', 'recordedAt'])
+              && d.keys().hasOnly(['documentId', 'revision', 'value', 'recordedAt'])
+              && (d.documentId == 'program' || validSessionId(d.documentId))
+              && d.revision is int && d.revision >= 1
+              && historyId == d.documentId + '-' + string(d.revision)
+              && d.recordedAt == request.time && target.updatedAt == request.time
+              && target.revision == d.revision && d.value == target;
+          }
+          allow get: if programId == 'tractions-12-v1' && canRead(uid);
+          allow list: if programId == 'tractions-12-v1' && canRead(uid)
+            && request.query.limit != null && request.query.limit <= 50;
+          allow create: if programId == 'tractions-12-v1' && owner(uid) && validEntry();
+          allow update, delete: if false;
+        }
         match /sessions/{sessionId} {
           // Une liste doit contraindre documentId() aux 12 ID autorisés.
           allow get, list: if programId == 'tractions-12-v1' && validSessionId(sessionId) && canRead(uid);

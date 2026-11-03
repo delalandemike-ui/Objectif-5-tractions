@@ -16,7 +16,7 @@ async function app(raw=null,options={}){
  HTMLAnchorElement.prototype.click=function(){testStore.downloads++};
  Object.defineProperty(navigator,'serviceWorker',{value:{register:()=>Promise.resolve()}});
  <\/script>`;
- await new Promise(resolve=>{frame.onload=resolve;frame.srcdoc=decode(SOURCES.index).replace('<script>',setup+'<script>')});
+ await new Promise(resolve=>{frame.onload=resolve;frame.srcdoc=decode(SOURCES.index).replace('<script type="module" src="js/program-account.js"><\/script>','').replace('<script>',setup+'<script>')});
  return {w:frame.contentWindow,d:frame.contentDocument,store:frame.contentWindow.testStore,close:()=>frame.remove()};
 }
 async function main(){
@@ -108,7 +108,8 @@ async function main(){
    let intercepted=false;handlers.fetch({request:{method:'GET',url},respondWith(){intercepted=true}});
    assert(!intercepted,'ressource privée interceptée : '+url);
   }
-  assert(!/<script[^>]+src=|firebase(app|auth|firestore)|initializeApp\(/i.test(shell),'dépendance distante');
+  assert(!/https:\/\/.*firebase|initializeApp\(/i.test(shell),'dépendance distante');
+  assert(decode(SOURCES.sw).includes('./js/program-account.js')&&decode(SOURCES.sw).includes('./js/athlete-session.js'),'modules locaux non préchargés');
  });
  document.getElementById('results').textContent=results.join('\n')+'\n'+(results.some(r=>r.startsWith('FAIL'))?'FAILED':'ALL PASSED');
 }

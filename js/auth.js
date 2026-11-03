@@ -20,6 +20,8 @@ const MESSAGES = Object.freeze({
   "auth/network-request-failed": "Connexion interrompue. Vérifiez l'état de session avant de réessayer.",
   "auth/too-many-requests": "Trop de tentatives. Patientez avant de réessayer.",
   "auth/operation-not-allowed": "Ce mode de connexion n'est pas disponible.",
+  "auth/email-already-in-use": "Un compte existe déjà pour cette adresse. Connectez-vous avec votre mot de passe.",
+  "auth/weak-password": "Utilisez un mot de passe d’au moins 6 caractères.",
   "auth/unauthorized-domain": "Ce domaine n'est pas autorisé pour la connexion.",
   "auth/already-initialized": "Auth est déjà initialisé avec d'autres options. Rechargez un contexte isolé."
 });
@@ -47,7 +49,7 @@ function linkValue(link) {
   return url.href;
 }
 function identity(user) {
-  return user ? Object.freeze({ uid: user.uid, email: user.email, emailVerified: user.emailVerified === true }) : null;
+  return user ? Object.freeze({ uid: user.uid, email: user.email, emailVerified: user.emailVerified === true, displayName: user.displayName || '' }) : null;
 }
 
 async function loadDependencies() {
@@ -67,7 +69,7 @@ async function loadDependencies() {
 }
 
 // Injection réservée aux tests ; le client par défaut utilise le SDK CDN réel.
-export function createAuthClient({ load = loadDependencies } = {}) {
+export function createAuthClient({ load = loadDependencies, persistence = 'memory' } = {}) {
   let pending = null;
   let busy = false;
   function context() {
@@ -83,8 +85,10 @@ export function createAuthClient({ load = loadDependencies } = {}) {
         } catch (error) { throw failure(error, "auth/sdk-load-failed"); }
         const { sdk, app } = dependencies;
         try {
-          // La mémoire seule évite de restaurer une session persistée implicitement.
-          const auth = sdk.initializeAuth(app, { persistence: sdk.inMemoryPersistence });
+          // Le coach reste en mémoire ; le sportif conserve sa session dans cet onglet.
+          const selected = persistence === 'local' ? sdk.browserLocalPersistence : persistence === 'session' ? sdk.browserSessionPersistence : sdk.inMemoryPersistence;
+          if (!selected) throw new Error('Persistance Auth indisponible');
+          const auth = sdk.initializeAuth(app, { persistence: selected });
           return { sdk, auth, app };
         } catch (error) { throw failure(error, "auth/init-failed"); }
       }).catch(error => { pending = null; throw error; });
@@ -98,13 +102,16 @@ export function createAuthClient({ load = loadDependencies } = {}) {
     finally { busy = false; }
   }
   return Object.freeze({
-    register(email, password) {
+    register(email, password, { displayName = '', invitationId = '' } = {}) {
       return exclusive(async () => {
         const address = emailValue(email);
         if (typeof password !== 'string' || password.length < 6) throw new AuthPreparationError('auth/weak-password', 'Utilisez au moins 6 caractères.');
         const { sdk, auth } = await context();
         const credential = await sdk.createUserWithEmailAndPassword(auth, address, password);
-        try { await sdk.sendEmailVerification(credential.user, { url: new URL('athlete.html', AUTH_RETURN_URL).href }); }
+        if (displayName) await sdk.updateProfile(credential.user, { displayName: String(displayName).trim().slice(0, 100) });
+        const destination = new URL('athlete.html', AUTH_RETURN_URL);
+        if (/^[\w-]{1,128}$/.test(invitationId)) destination.searchParams.set('invitation', invitationId);
+        try { await sdk.sendEmailVerification(credential.user, { url: destination.href }); }
         catch { throw new AuthPreparationError('auth/verification-not-sent', 'Compte créé, mais e-mail non envoyé. Connectez-vous puis utilisez Renvoyer la vérification.'); }
         return identity(credential.user);
       });

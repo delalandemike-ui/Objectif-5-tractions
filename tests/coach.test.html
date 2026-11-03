@@ -30,7 +30,7 @@ function dataFixture(){
 }
 const coach={uid:'coach',email:'coach@example.invalid',emailVerified:true};
 const {accessAction}=await import(blob(decode(SOURCES.invitations).replace("import { cloud } from './cloud.js';", 'const cloud = () => { throw Error("Réseau interdit"); };')));
-const {createCoachManagement}=await import(blob(decode(SOURCES.management).replace("import { accessAction } from './invitations.js';", 'const accessAction = (...args) => globalThis.invitationAction(...args);').replace("import { createAthleteData } from './athlete-data.js';", 'const createAthleteData = () => ({});')));
+const {createCoachManagement}=await import(blob(decode(SOURCES.management).replace("import { accessAction } from './invitations.js';", 'const accessAction = (...args) => globalThis.invitationAction(...args);').replace("import { createAthleteData } from './athlete-data.js';", 'const createAthleteData = () => ({});').replace("import { mountMessages } from './messages.js';",'const mountMessages=()=>()=>{};').replace("import { bounded } from './athlete-session.js';",'const bounded=action=>action();')));
 await test('Invitation : adresse valide, écriture conforme Spark et liste filtrée',async()=>{
  let written,filter;const sdk={collection:()=> 'invitations',doc:()=>({id:'fictive'}),serverTimestamp:()=> 'SERVER',Timestamp:{fromMillis:n=>n},async setDoc(ref,value){written=value},where:(...args)=>(filter=args),query:()=> 'query',async getDocsFromServer(){return {docs:[]}}};
  const options={load:async()=>({sdk,db:{}})};
@@ -45,19 +45,19 @@ await test('Invitation : délais SDK, écriture, lecture et refus explicites ; p
  const options={load:async()=>({sdk,db:{}}),timeoutMs:5};
  for(const [action,input,opts,fragment] of [
  ['listInvitations',{}, {load:never,timeoutMs:5},'initialisation'],
- ['createInvitation',{email:'pending@exemple.fr'},options,'setDoc'],
- ['createInvitation',{email:'pending@exemple.fr'},options,'setDoc'],
- ['listInvitations',{},options,'getDocsFromServer']]){
+ ['createInvitation',{email:'pending@exemple.fr'},options,'création'],
+ ['createInvitation',{email:'pending@exemple.fr'},options,'création'],
+ ['listInvitations',{},options,'lecture']]){
   try{await accessAction(coach,action,input,opts);throw Error('succès inattendu')}catch(e){assert(e.code==='access/timeout'&&e.message.includes(fragment),'délai '+fragment)}
  }
  assert(writes===1,'double création');
  sdk.getDocsFromServer=async()=>{throw {code:'permission-denied'}};
- try{await accessAction(coach,'listInvitations',{},options);throw Error('succès inattendu')}catch(e){assert(e.message.includes('Accès refusé')&&e.message.includes('getDocsFromServer'),'refus')}
+ try{await accessAction(coach,'listInvitations',{},options);throw Error('succès inattendu')}catch(e){assert(e.message.includes('Accès refusé')&&e.message.includes('lecture'),'refus')}
 });
 await test('Gestion : validation, refus, reprise et création confirmée avant échec de lecture',async()=>{
- const root=document.createElement('div');document.body.append(root);
+ const root=document.createElement('div');document.body.append(root);let manage;
  try{
-  createCoachManagement(root)(coach,[]);
+  globalThis.invitationAction=async()=>({invitations:[]});manage=createCoachManagement(root);manage(coach,[]);await tick();
   const email=root.querySelector('input'),buttons=()=>[...root.querySelectorAll('button')],status=root.querySelector('[role=status]');
   await buttons()[0].onclick();assert(status.textContent.includes('valide')&&buttons().every(b=>!b.disabled),'validation');
   email.value='sportif@exemple.fr';globalThis.invitationAction=async()=>{throw Error('Accès refusé par Firebase')};
@@ -65,10 +65,24 @@ await test('Gestion : validation, refus, reprise et création confirmée avant �
   globalThis.invitationAction=async(u,action)=>{if(action==='listInvitations')throw Error('Lecture indisponible');return {id:'fictive'}};
   await buttons()[0].onclick();assert(status.textContent.includes('Invitation créée')&&status.textContent.includes('Ne la recréez pas')&&!email.value,'confirmation');
   globalThis.invitationAction=async()=>({invitations:[]});await buttons()[1].onclick();assert(status.textContent==='Aucune invitation.'&&buttons().every(b=>!b.disabled),'actualisation');
- }finally{root.remove();delete globalThis.invitationAction}
+ }finally{manage?.(null,[]);root.remove();delete globalThis.invitationAction}
 });
 await test('Données : coach confirmé même sur liste vide et jamais depuis le cache',async()=>{
  const f=dataFixture(),states=[];const stop=await f.client.watch(coach,s=>states.push(s),e=>{throw e});f.emit([],true);assert(!states.at(-1).authorized,'cache autorisé');f.emit();await tick();assert(states.at(-1).authorized&&states.at(-1).athletes.length===0,'vide');assert(f.calls.paths[0]==='coaches/coach/athletes'&&!f.calls.paths.includes('settings/access'),'chemin');stop();
+});
+await test('Coach : demandes lisibles, acceptation/refus et fiche privée sans identifiant affiché',async()=>{
+ const root=document.createElement('div');document.body.append(root);const originalConfirm=window.confirm;window.confirm=()=>true;let manage,conversation=0;
+ try{
+  const stamp={toMillis:()=>1700000000000},rows=[{id:'pending-id',status:'pending',email:'invite@example.invalid'},{id:'request-id',status:'requested',athleteUid:'private-uid',email:'sportif@example.invalid',displayName:'Pseudo <texte>',requestedAt:stamp}];
+  const actions=[];const access=async(u,action,input)=>{actions.push(action);if(action==='listInvitations')return {invitations:rows};if(action==='approveInvitation')rows[1].status='accepted';if(action==='manageAccess')rows[1].status='cancelled'};
+  const data={async readAthlete(){return Object.fromEntries(['program',...Array.from({length:12},(_,i)=>String(i+1))].map(id=>[id,{value:id==='program'?{score:4,notes:'notes'}:{completed:id==='1',performance:0,comments:'commentaire'}}]))},async readHistory(){return {entries:[{documentId:'program',value:{score:4,notes:'nouveau'},recordedAt:stamp}],hasMore:false}}};
+  manage=createCoachManagement(root,{access,data,messaging:()=>{conversation++;return ()=>{}}});manage(coach,[{uid:'private-uid',displayName:'Pseudo'}]);await tick();
+  assert(root.textContent.includes('Demandes à valider')&&root.textContent.includes('Pseudo <texte>')&&!root.textContent.includes('private-uid')&&!root.querySelector('input[readonly]'),'présentation');
+  const find=label=>[...root.querySelectorAll('button')].find(button=>button.textContent===label);
+  await find('Accepter').onclick();assert(actions.filter(action=>action==='approveInvitation').length===1&&!find('Accepter'),'traitement');
+  await find('Ouvrir la fiche').onclick();assert(root.textContent.includes('1/12')&&root.textContent.includes('sportif@example.invalid')&&root.textContent.includes('Évolution')&&conversation===1,'fiche');
+  rows[1].status='requested';await find('Actualiser').onclick();await find('Refuser').onclick();assert(actions.includes('manageAccess')&&!find('Refuser'),'refus');
+ }finally{manage?.(null,[]);root.remove();window.confirm=originalConfirm}
 });
 await test('Données : admission requise et profil lu sur le serveur',async()=>{
  const f=dataFixture(),states=[];f.sdk.getDocFromServer=async path=>{f.calls.paths.push(path);if(path==='athletes/refuse')throw {code:'permission-denied'};return {exists:()=>true,data:()=>path.startsWith('athletes/')?{enrolled:true}:{displayName:'Alice fictive'}}};const stop=await f.client.watch(coach,s=>states.push(s),e=>{throw e});f.emit(['alice','refuse']);await tick();assert(states.at(-1).athletes.length===1&&states.at(-1).athletes[0].uid==='alice','admission');assert(f.calls.paths.includes('users/alice'),'profil');stop();

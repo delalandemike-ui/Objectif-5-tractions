@@ -22,12 +22,14 @@ const fixtures = [
     module: encode(await read('tests/email-verification-controller.js')),
     page: encode(await read('tests/verification-email-coach.html'))
   } },
-  { name: 'coach-simule', file: 'coach.test.html', expected: 15, sources: {
+  { name: 'coach-simule', file: 'coach.test.html', expected: 16, sources: {
     invitations: encode(await read('js/invitations.js')), management: encode(await read('js/coach-management.js')),
     auth: encode(await read('js/auth.js')), data: encode(await read('js/coach-data.js')),
     page: encode(await read('js/coach-page.js')), layout: encode(await read('coach.html')), index
   } },
-  { name: 'multisport-simule', file: 'multisport.test.html', expected: 13, sources: {
+  { name: 'multisport-simule', file: 'multisport.test.html', expected: 27, sources: {
+    messages: encode(await read('js/messages.js')),
+    session: encode(await read('js/athlete-session.js')), program: encode(await read('js/program-account.js')), auth: encode(await read('js/auth.js')),
     store: encode(await read('js/athlete-store.js')),
     page: encode(await read('js/athlete-page.js')), layout: encode(await read('athlete.html')),
     remote: encode(await read('js/athlete-data.js')), cloud: encode(await read('js/cloud.js')),

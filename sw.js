@@ -1,6 +1,6 @@
-const CACHE_NAME = "objectif-5-tractions-spark-v5";
+const CACHE_NAME = "objectif-5-tractions-spark-v7";
 const APP_SHELL = ["./", "./index.html"];
-const MULTISPORT_SHELL = ['./athlete.html', './multisport.css', './js/athlete-page.js', './js/athlete-store.js', './js/athlete-data.js', './js/cloud.js', './js/invitations.js', './js/multisport-config.js', './js/auth.js', './js/firebase-config.js'];
+const MULTISPORT_SHELL = ['./athlete.html', './multisport.css', './js/athlete-page.js', './js/athlete-session.js', './js/program-account.js', './js/messages.js', './js/athlete-store.js', './js/athlete-data.js', './js/cloud.js', './js/invitations.js', './js/multisport-config.js', './js/auth.js', './js/firebase-config.js'];
 
 self.addEventListener("install", (event) => {
   event.waitUntil(

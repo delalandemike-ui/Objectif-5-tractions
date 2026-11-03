@@ -15,7 +15,7 @@ export function mountCoachPage(doc, { auth = createAuthClient(), data = createCo
     $('login-panel').hidden = !!user; $('account').hidden = !user;
     $('email').disabled = $('password').disabled = $('connect').disabled = busy || !!user;
     $('refresh').disabled = busy || !user; $('disconnect').disabled = busy || !user;
-    $('identity').textContent = user ? `${user.email || 'Adresse indisponible'} · ${user.uid}` : '';
+    $('identity').textContent = user ? user.email || 'Mon compte coach' : '';
   }
   function invalidate() { epoch++; stop?.(); stop = null; clear(); }
   function failure(error) {
@@ -40,7 +40,7 @@ export function mountCoachPage(doc, { auth = createAuthClient(), data = createCo
         if (!state.authorized) { message(state.loading ? 'Chargement des sportifs autorisés…' : 'Connexion au serveur nécessaire pour confirmer l’accès coach.'); return; }
         $('role').textContent = 'Coach désigné et actif · adresse e-mail vérifiée';
         for (const athlete of state.athletes) {
-          const item = doc.createElement('li'); item.textContent = athlete.displayName + ' · ' + athlete.uid;
+          const item = doc.createElement('li'); item.textContent = athlete.displayName || 'Sportif';
           $('athletes').appendChild(item);
         }
         $('empty').hidden = state.athletes.length !== 0; $('dashboard').hidden = false;

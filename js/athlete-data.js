@@ -19,9 +19,21 @@ export function createAthleteData() {
         const value = { ...local.value };
         if (value.completedAt !== undefined && value.completedAt !== null) value.completedAt = sdk.Timestamp.fromMillis(value.completedAt);
         const revision = remote.revision + 1;
-        tx.set(ref, { ...value, revision, updatedAt: sdk.serverTimestamp() });
+        const saved = { ...value, revision, updatedAt: sdk.serverTimestamp() };
+        tx.set(ref, saved);
+        // Archive immuable liée à la même transaction que le résultat.
+        tx.set(sdk.doc(db, `athletes/${uid}/programs/${PROGRAM}/history/${id}-${revision}`), {
+          documentId: id, revision, value: saved, recordedAt: sdk.serverTimestamp()
+        });
         return { revision };
       });
+    },
+    async readHistory(uid, cursor = null) {
+      const { sdk, db } = await cloud();
+      const clauses = [sdk.orderBy('recordedAt', 'desc'), sdk.limit(50)];
+      if (cursor) clauses.push(sdk.startAfter(cursor));
+      const rows = await sdk.getDocsFromServer(sdk.query(sdk.collection(db, `athletes/${uid}/programs/${PROGRAM}/history`), ...clauses));
+      return { entries: rows.docs.map(row => ({ id: row.id, ...row.data() })), cursor: rows.docs.at(-1), hasMore: rows.size === 50 };
     },
     async readAthlete(uid) {
       const { sdk, db } = await cloud();

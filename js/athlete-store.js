@@ -13,14 +13,19 @@ export function createAthleteStore(uid, storage = localStorage) {
     const encoded = JSON.stringify(next); storage.setItem(key, encoded); state = next; raw = encoded;
   }
   function edit(id, value) {
-    if (id !== 'program' && !/^(?:[1-9]|1[0-2])$/.test(id)) throw new Error('Séance invalide.');
+    editMany({ [id]: value });
+  }
+  function editMany(values) {
+    for (const id of Object.keys(values)) if (id !== 'program' && !/^(?:[1-9]|1[0-2])$/.test(id)) throw new Error('Séance invalide.');
     commit(next => {
-      const old = next.documents[id];
-      next.documents[id] = { ...old, base: old?.base || 0, value: structuredClone(value), dirty: true, version: (old?.version || 0) + 1 };
+      for (const [id, value] of Object.entries(values)) {
+        const old = next.documents[id];
+        next.documents[id] = { ...old, base: old?.base || 0, value: structuredClone(value), dirty: true, version: (old?.version || 0) + 1 };
+      }
     });
   }
   return {
-    uid, read: () => structuredClone(state), edit,
+    uid, read: () => structuredClone(state), edit, editMany,
     importLegacy() {
       const legacy = storage.getItem('tractions-v2');
       if (!legacy) throw new Error('Aucun suivi tractions-v2 sur cet appareil.');
@@ -31,14 +36,20 @@ export function createAthleteStore(uid, storage = localStorage) {
         next.history.push({ kind: 'legacy', raw: legacy, at: Date.now() }); next.imported = true;
         const put = (id, value) => { next.documents[id] = { base: 0, value, dirty: true, version: 1 }; };
         put('program', { schemaVersion: 1, score: data.score === '' ? null : +data.score, notes: data.notes });
-        for (let id = 1; id <= 12; id++) put(String(id), { ...emptySession(), completed: data.done.includes(id) });
+        for (let id = 1; id <= 12; id++) {
+          const session = data.sessions?.[id];
+          if (session && (!Number.isInteger(session.performance) && session.performance !== null || session.performance < 0 || session.performance > 10000 || typeof session.comments !== 'string' || session.comments.length > 5000)) throw new Error('Résultat historique invalide : original conservé.');
+          put(String(id), { ...emptySession(), performance: session?.performance ?? null, comments: session?.comments || '', completed: data.done.includes(id) });
+        }
       });
     },
-    async sync(remote) {
+    async sync(remote, { signal } = {}) {
       for (const id of ['program', ...Array.from({ length: 12 }, (_, i) => String(i + 1))]) {
+        if (signal?.aborted) return;
         const sent = structuredClone(state.documents[id]);
         if (sent?.conflict) continue;
         const result = await remote.exchange(uid, id, sent);
+        if (signal?.aborted) return;
         commit(next => {
           const current = next.documents[id];
           if (result.conflict) {

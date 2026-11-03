@@ -8,6 +8,10 @@ function Encode-Source([string]$path) { [Convert]::ToBase64String([IO.File]::Rea
 $sources = @{
     store = Encode-Source (Join-Path $root 'js/athlete-store.js')
     page = Encode-Source (Join-Path $root 'js/athlete-page.js')
+    session = Encode-Source (Join-Path $root 'js/athlete-session.js')
+    program = Encode-Source (Join-Path $root 'js/program-account.js')
+    auth = Encode-Source (Join-Path $root 'js/auth.js')
+    messages = Encode-Source (Join-Path $root 'js/messages.js')
     layout = Encode-Source (Join-Path $root 'athlete.html')
     remote = Encode-Source (Join-Path $root 'js/athlete-data.js')
     cloud = Encode-Source (Join-Path $root 'js/cloud.js')

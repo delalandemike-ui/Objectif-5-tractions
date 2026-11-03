@@ -39,7 +39,7 @@ export function createCoachDataClient({ load = loadDependencies } = {}) {
             if (!admission.exists() || admission.data().enrolled !== true) return null;
             const profile = await sdk.getDocFromServer(sdk.doc(db, 'users', relation.id));
             const name = profile.exists() && typeof profile.data().displayName === 'string' ? profile.data().displayName : '';
-            return { uid: relation.id, displayName: name || relation.data?.().displayName || relation.id };
+            return { uid: relation.id, displayName: name || relation.data?.().displayName || 'Sportif' };
           } catch (error) {
             if (error.code === 'permission-denied') return null;
             throw error;

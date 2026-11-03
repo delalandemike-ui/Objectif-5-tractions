@@ -1,0 +1,236 @@
+// PROPOSITION coaching Spark : tests locaux uniquement. Aucune publication automatique.
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    function verified() {
+      return request.auth != null
+        && request.auth.token.keys().hasAll(['email_verified'])
+        && request.auth.token.email_verified == true;
+    }
+    function designatedCoach(uid) {
+      return exists(/databases/$(database)/documents/settings/access)
+        && get(/databases/$(database)/documents/settings/access).data.keys().hasAll(['coachUid', 'active'])
+        && get(/databases/$(database)/documents/settings/access).data.coachUid is string
+        && get(/databases/$(database)/documents/settings/access).data.coachUid.size() > 0
+        && get(/databases/$(database)/documents/settings/access).data.coachUid.size() <= 128
+        && get(/databases/$(database)/documents/settings/access).data.active is bool
+        && get(/databases/$(database)/documents/settings/access).data.coachUid == uid;
+    }
+    function coach() {
+      return verified()
+        && designatedCoach(request.auth.uid)
+        && get(/databases/$(database)/documents/settings/access).data.active == true
+        && get(/databases/$(database)/documents/settings/access).data.coachUid == request.auth.uid;
+    }
+    function enrolled(uid) {
+      return exists(/databases/$(database)/documents/athletes/$(uid))
+        && get(/databases/$(database)/documents/athletes/$(uid)).data.keys().hasAll(['enrolled'])
+        && get(/databases/$(database)/documents/athletes/$(uid)).data.enrolled == true;
+    }
+    function owner(uid) {
+      return verified() && request.auth.uid == uid && enrolled(uid);
+    }
+    function assigned(uid) {
+      return coach() && enrolled(uid)
+        && exists(/databases/$(database)/documents/coaches/$(request.auth.uid)/athletes/$(uid))
+        && get(/databases/$(database)/documents/coaches/$(request.auth.uid)/athletes/$(uid)).data.keys().hasAll(['status'])
+        && get(/databases/$(database)/documents/coaches/$(request.auth.uid)/athletes/$(uid)).data.status == 'active';
+    }
+    function canRead(uid) {
+      return owner(uid) || assigned(uid);
+    }
+    function validUpdatedAt() {
+      return request.resource.data.updatedAt is timestamp
+        && request.resource.data.updatedAt == request.time
+        && (request.method == 'create'
+          || (resource.data.keys().hasAll(['updatedAt'])
+            && resource.data.updatedAt is timestamp && request.time >= resource.data.updatedAt));
+    }
+    function validRevision() {
+      return request.resource.data.revision is int && request.resource.data.revision >= 1
+        && validUpdatedAt()
+        && ((request.method == 'create' && request.resource.data.revision == 1)
+          || (request.method == 'update' && resource.data.keys().hasAll(['revision'])
+            && resource.data.revision is int && resource.data.revision >= 1
+            && request.resource.data.revision == resource.data.revision + 1));
+    }
+    function validSessionId(id) {
+      return id in ['1', '2', '3', '4', '5', '6', '7', '8', '9', '10', '11', '12'];
+    }
+    function validProgram() {
+      let d = request.resource.data;
+      return d.keys().hasAll(['schemaVersion', 'score', 'notes', 'revision', 'updatedAt'])
+        && d.keys().hasOnly(['schemaVersion', 'score', 'notes', 'revision', 'updatedAt'])
+        && d.schemaVersion is int && d.schemaVersion == 1
+        && (d.score == null || (d.score is int && d.score >= 0 && d.score <= 30))
+        && d.notes is string && d.notes.size() <= 20000
+        && validRevision();
+    }
+    function validSession() {
+      let d = request.resource.data;
+      return d.keys().hasAll(['completed', 'completedAt', 'revision', 'updatedAt'])
+        && d.keys().hasOnly(['completed', 'completedAt', 'revision', 'updatedAt', 'performance', 'comments'])
+        && (!d.keys().hasAny(['performance']) || d.performance == null
+          || (d.performance is int && d.performance >= 0 && d.performance <= 10000))
+        && (!d.keys().hasAny(['comments']) || (d.comments is string && d.comments.size() <= 5000))
+        && d.completed is bool
+        && (d.completedAt == null || (d.completedAt is timestamp && d.completedAt <= request.time))
+        && (d.completed || d.completedAt == null)
+        && validRevision();
+    }
+    function validProfile() {
+      let d = request.resource.data;
+      return d.keys().hasAll(['displayName', 'updatedAt'])
+        && d.keys().hasOnly(['displayName', 'updatedAt'])
+        && d.displayName is string && d.displayName.size() <= 100
+        && validUpdatedAt();
+    }
+
+    function invitationFor(id) {
+      return get(/databases/$(database)/documents/invitations/$(id)).data;
+    }
+    function admissionApproved(uid) {
+      let d = request.resource.data;
+      let before = invitationFor(d.invitationId);
+      let after = getAfter(/databases/$(database)/documents/invitations/$(d.invitationId)).data;
+      let relation = getAfter(/databases/$(database)/documents/coaches/$(request.auth.uid)/athletes/$(uid)).data;
+      return coach() && uid != request.auth.uid
+        && d.keys().hasOnly(['enrolled', 'invitedBy', 'invitationId', 'acceptedAt'])
+        && d.enrolled == true && d.invitedBy == request.auth.uid && d.acceptedAt == request.time
+        && before.coachUid == request.auth.uid && before.status == 'requested'
+        && before.athleteUid == uid && before.expiresAt > request.time
+        && after.status == 'accepted' && after.athleteUid == uid
+        && relation.status == 'active' && relation.invitationId == d.invitationId;
+    }
+    function admissionRevoked(uid) {
+      return coach() && request.resource.data.enrolled == false
+        && request.resource.data.revokedAt == request.time
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['enrolled', 'revokedAt'])
+        && resource.data.invitedBy == request.auth.uid
+        && getAfter(/databases/$(database)/documents/coaches/$(request.auth.uid)/athletes/$(uid)).data.status == 'revoked';
+    }
+    // Aucun client ne peut changer le coach désigné.
+    match /settings/{id} { allow read, write: if false; }
+    match /invitations/{id} {
+      allow get: if coach() || (verified() && resource.data.email == request.auth.token.email.lower());
+      allow list: if (coach() && resource.data.coachUid == request.auth.uid)
+        || (verified() && resource.data.email == request.auth.token.email.lower());
+      allow create: if coach()
+        && request.resource.data.keys().hasOnly(['email', 'coachUid', 'status', 'createdAt', 'expiresAt'])
+        && request.resource.data.coachUid == request.auth.uid
+        && request.resource.data.email is string && request.resource.data.email.size() > 3 && request.resource.data.email.size() <= 254
+        && request.resource.data.email == request.resource.data.email.lower()
+        && request.resource.data.status == 'pending' && request.resource.data.createdAt == request.time
+        && request.resource.data.expiresAt is timestamp && request.resource.data.expiresAt > request.time
+        && request.resource.data.expiresAt <= request.time + duration.value(8, 'd');
+      allow update: if
+        (verified() && resource.data.status == 'pending' && resource.data.expiresAt > request.time
+          && resource.data.email == request.auth.token.email.lower()
+          && designatedCoach(resource.data.coachUid)
+          && get(/databases/$(database)/documents/settings/access).data.active == true
+          && request.auth.uid != resource.data.coachUid
+          && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['status', 'athleteUid', 'requestedAt', 'displayName'])
+          && request.resource.data.status == 'requested' && request.resource.data.athleteUid == request.auth.uid
+          && request.resource.data.requestedAt == request.time
+          && request.resource.data.displayName is string && request.resource.data.displayName.size() <= 100)
+        || (coach() && resource.data.coachUid == request.auth.uid
+          && resource.data.status in ['pending', 'requested']
+          && ((request.resource.data.status == 'cancelled'
+              && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['status']))
+            || (resource.data.status == 'requested' && resource.data.expiresAt > request.time
+              && request.resource.data.status == 'accepted' && request.resource.data.acceptedAt == request.time
+              && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['status', 'acceptedAt'])
+              && getAfter(/databases/$(database)/documents/athletes/$(resource.data.athleteUid)).data.enrolled == true
+              && getAfter(/databases/$(database)/documents/athletes/$(resource.data.athleteUid)).data.invitationId == id)));
+      allow delete: if false;
+    }
+
+    match /users/{uid} {
+      allow get: if canRead(uid) || (coach() && request.auth.uid == uid);
+      allow create, update: if (owner(uid) || (coach() && request.auth.uid == uid)) && validProfile();
+      allow list, delete: if false;
+    }
+    match /coaches/{coachUid}/athletes/{athleteUid} {
+      allow get: if (coach() && request.auth.uid == coachUid)
+        || (owner(athleteUid) && designatedCoach(coachUid));
+      allow list: if coach() && request.auth.uid == coachUid;
+      allow create, update: if coach() && request.auth.uid == coachUid
+        && ((request.resource.data.status == 'active'
+          && request.resource.data.keys().hasOnly(['status', 'invitationId', 'acceptedAt', 'displayName'])
+          && request.resource.data.acceptedAt == request.time
+          && invitationFor(request.resource.data.invitationId).status == 'requested'
+          && invitationFor(request.resource.data.invitationId).athleteUid == athleteUid
+          && invitationFor(request.resource.data.invitationId).coachUid == coachUid
+          && request.resource.data.displayName == invitationFor(request.resource.data.invitationId).displayName
+          && getAfter(/databases/$(database)/documents/invitations/$(request.resource.data.invitationId)).data.status == 'accepted'
+          && getAfter(/databases/$(database)/documents/athletes/$(athleteUid)).data.invitationId == request.resource.data.invitationId
+          && getAfter(/databases/$(database)/documents/athletes/$(athleteUid)).data.enrolled == true)
+        || (request.method == 'update' && request.resource.data.status == 'revoked'
+          && request.resource.data.revokedAt == request.time
+          && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['status', 'revokedAt'])
+          && getAfter(/databases/$(database)/documents/athletes/$(athleteUid)).data.enrolled == false));
+      allow delete: if false;
+    }
+    // Seul le coach peut approuver et révoquer, avec écritures atomiques liées.
+    match /athletes/{uid} {
+      // Seul le statut de son propre compte reste lisible après révocation.
+      allow get: if canRead(uid) || (verified() && request.auth.uid == uid);
+      allow create: if admissionApproved(uid);
+      allow update: if admissionApproved(uid) || admissionRevoked(uid);
+      allow list, delete: if false;
+      match /messages/{messageId} {
+        function participant() {
+          let admission = get(/databases/$(database)/documents/athletes/$(uid)).data;
+          return assigned(uid) || (owner(uid)
+            && designatedCoach(admission.invitedBy)
+            && get(/databases/$(database)/documents/settings/access).data.active == true
+            && get(/databases/$(database)/documents/coaches/$(admission.invitedBy)/athletes/$(uid)).data.status == 'active');
+        }
+        allow get: if participant();
+        allow list: if participant() && request.query.limit != null && request.query.limit <= 50;
+        allow create: if participant()
+          && request.resource.data.keys().hasAll(['senderUid', 'text', 'createdAt'])
+          && request.resource.data.keys().hasOnly(['senderUid', 'text', 'createdAt'])
+          && request.resource.data.senderUid == request.auth.uid
+          && request.resource.data.text is string && request.resource.data.text.size() > 0
+          && request.resource.data.text.size() <= 2000
+          && request.resource.data.createdAt == request.time;
+        allow update, delete: if false;
+      }
+      match /programs/{programId} {
+        allow get: if programId == 'tractions-12-v1' && canRead(uid);
+        allow create, update: if programId == 'tractions-12-v1' && owner(uid) && validProgram();
+        allow list, delete: if false;
+        match /history/{historyId} {
+          function validEntry() {
+            let d = request.resource.data;
+            let path = /databases/$(database)/documents/athletes/$(uid)/programs/$(programId);
+            let target = d.documentId == 'program' ? getAfter(path).data
+              : getAfter(/databases/$(database)/documents/athletes/$(uid)/programs/$(programId)/sessions/$(d.documentId)).data;
+            return d.keys().hasAll(['documentId', 'revision', 'value', 'recordedAt'])
+              && d.keys().hasOnly(['documentId', 'revision', 'value', 'recordedAt'])
+              && (d.documentId == 'program' || validSessionId(d.documentId))
+              && d.revision is int && d.revision >= 1
+              && historyId == d.documentId + '-' + string(d.revision)
+              && d.recordedAt == request.time && target.updatedAt == request.time
+              && target.revision == d.revision && d.value == target;
+          }
+          allow get: if programId == 'tractions-12-v1' && canRead(uid);
+          allow list: if programId == 'tractions-12-v1' && canRead(uid)
+            && request.query.limit != null && request.query.limit <= 50;
+          allow create: if programId == 'tractions-12-v1' && owner(uid) && validEntry();
+          allow update, delete: if false;
+        }
+        match /sessions/{sessionId} {
+          // Une liste doit contraindre documentId() aux 12 ID autorisés.
+          allow get, list: if programId == 'tractions-12-v1' && validSessionId(sessionId) && canRead(uid);
+          allow create, update: if programId == 'tractions-12-v1'
+            && validSessionId(sessionId) && owner(uid) && validSession();
+          allow delete: if false;
+        }
+      }
+    }
+    // Aucun accès implicite aux imports, sous-collections ou chemins inconnus.
+    match /{document=**} { allow read, write: if false; }
+  }
+}

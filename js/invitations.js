@@ -6,8 +6,8 @@ export async function accessAction(user, action, input = {}, { load = cloud, tim
   let timer, operation = 'initialisation Firebase';
   const work = executeAccessAction(user, action, input, async () => {
     const context = await load();
-    operation = action === 'createInvitation' ? 'création de l’invitation (setDoc)'
-      : action === 'listInvitations' ? 'lecture des invitations (getDocsFromServer)' : action;
+    operation = action === 'createInvitation' ? 'création de l’invitation'
+      : ['listInvitations', 'myInvitations'].includes(action) ? 'lecture des invitations' : 'mise à jour de votre demande';
     return context;
   });
   try {
@@ -52,11 +52,23 @@ async function executeAccessAction(user, action, input, load) {
     const rows = await sdk.getDocsFromServer(sdk.query(sdk.collection(db, 'invitations'), sdk.where('coachUid', '==', user.uid)));
     return { invitations: rows.docs.map(row => ({ id: row.id, ...row.data(), status: ['pending', 'requested'].includes(row.data().status) && row.data().expiresAt.toMillis() <= Date.now() ? 'expired' : row.data().status })) };
   }
+  if (action === 'myInvitations') {
+    const rows = await sdk.getDocsFromServer(sdk.query(sdk.collection(db, 'invitations'), sdk.where('email', '==', user.email.toLowerCase())));
+    return { invitations: rows.docs.map(row => ({ id: row.id, ...row.data() })) };
+  }
+  if (action === 'getInvitation') {
+    const row = await sdk.getDocFromServer(invitation(input.id));
+    if (!row.exists()) throw new Error('Invitation inconnue.');
+    return { id: row.id, ...row.data() };
+  }
   if (action === 'acceptInvitation') {
     await sdk.runTransaction(db, async tx => {
       const ref = invitation(input.id), row = await tx.get(ref);
       if (!row.exists()) throw new Error('Invitation inconnue.');
-      if (row.data().status === 'requested' && row.data().athleteUid === user.uid) return;
+      const invite = row.data();
+      if (invite.email !== user.email.toLowerCase()) throw new Error('Cette invitation est destinée à une autre adresse.');
+      if (invite.status === 'requested' && invite.athleteUid === user.uid) return;
+      if (invite.status !== 'pending' || invite.expiresAt.toMillis() <= Date.now()) throw Object.assign(new Error('Cette invitation a été refusée, annulée ou a expiré. Contactez votre coach.'), { code: 'invitation/inactive' });
       tx.update(ref, { status: 'requested', athleteUid: user.uid, displayName: String(input.displayName || '').trim(), requestedAt: sdk.serverTimestamp() });
     }); return;
   }

@@ -24,13 +24,21 @@ h2{font-size:19px;margin:0 0 12px}.small{font-size:13px;color:var(--muted)}
 .week{border-left:6px solid var(--blue);padding-left:11px;margin:12px 0}.w1{border-color:#79ad52}.w2{border-color:#6da7dc}.w3{border-color:#e2aa47}.w4{border-color:#dd706c}
 .session{display:flex;align-items:center;justify-content:space-between;gap:10px;border-bottom:1px solid #e7ecef;padding:10px 0}.session:last-child{border-bottom:0}.session.done{background:#edf8ec;border-radius:9px;padding:10px}
 label{font-weight:600;display:block;margin:10px 0 5px}
+#account-conflicts{overflow-wrap:anywhere}
+#athlete-messages li{overflow-wrap:anywhere}
 @media(max-width:520px){.row{grid-template-columns:1fr}.stats{grid-template-columns:repeat(3,1fr)}h1{font-size:24px}}
 </style>
 </head>
 <body>
 <header><h1>🎯 Objectif : 5 tractions</h1><p>4 semaines · 3 séances/semaine · 45 min maximum</p></header>
 <main>
-<section class="card"><h2>Espace sportif</h2><p>Mon compte, mes performances par séance et la synchronisation avec mon coach.</p><a href="athlete.html">Ouvrir mon espace sportif</a></section>
+<section class="card" id="athlete-account"><h2>Espace sportif</h2>
+<p id="account-identity">Mon suivi personnel.</p><p id="account-admission">Retrouvez votre programme et les conseils de votre coach.</p>
+<a href="athlete.html?manage=1">Connexion et gestion de mon compte</a>
+<div id="account-tools" hidden><button id="account-sync" type="button">Actualiser mon suivi</button><button id="account-close" type="button" class="secondary">Me déconnecter</button><div id="account-conflicts"></div></div>
+<details><summary>Mes sauvegardes sur cet appareil</summary><button id="account-import" type="button" class="secondary">Reprendre mes anciennes séances dans ce compte</button>
+<label for="account-local">Retrouver un suivi</label><select id="account-local"><option value="">Choisir un suivi sur cet appareil</option></select><button id="account-resume" type="button" class="secondary">Ouvrir ce suivi</button></details>
+<p id="account-status" class="small" role="status" aria-live="polite"></p></section>
 <section class="card"><h2>Espace coach</h2><p>Accès réservé au coach désigné. Le suivi personnel reste disponible sur cet appareil.</p><a href="coach.html">Ouvrir mon espace coach</a></section>
 <section class="card"><h2>Ma progression</h2><div class="progress"><div id="bar" class="bar"></div></div><p id="progressText" class="small"></p>
 <div class="stats"><div class="stat"><b id="done">0</b>Séances</div><div class="stat"><b id="best">1</b>Meilleur score</div><div class="stat"><b>5</b>Objectif</div></div></section>
@@ -44,6 +52,8 @@ label{font-weight:600;display:block;margin:10px 0 5px}
 <section class="card"><h2>📅 Séance du jour</h2>
 <div class="row"><select id="week"></select><select id="session"></select></div>
 <div id="detail" style="margin-top:12px"></div>
+<label for="session-performance">Tractions strictes réalisées pendant cette séance</label><input id="session-performance" type="number" min="0" max="10000" placeholder="Résultat de la séance">
+<label for="session-comments">Commentaires de cette séance</label><textarea id="session-comments" rows="3" maxlength="5000"></textarea>
 <div class="row" style="margin-top:10px"><button id="doneBtn">✓ Séance terminée</button><button class="secondary" id="resetBtn">Réinitialiser</button></div></section>
 
 <section class="card"><h2>📋 Les 12 séances</h2><div id="all"></div></section>
@@ -55,6 +65,8 @@ label{font-weight:600;display:block;margin:10px 0 5px}
 <button id="exportBtn" class="secondary" type="button">Exporter mes données (JSON)</button>
 <p class="small">Le fichier contient vos résultats et vos notes personnelles. Conservez-le dans un endroit sûr.</p>
 </section>
+
+<section class="card" id="athlete-messages" hidden></section>
 
 <section class="card"><h2>💡 Consignes</h2><ul>
 <li>Repos : 1 min 30 à 2 min entre les séries.</li>
@@ -101,6 +113,7 @@ function readLocalData(){
 }
 let loaded=readLocalData();
 let state=loaded.ok?loaded.state:{done:[],score:"",notes:""};
+let accountAdapter=null;
 const $=id=>document.getElementById(id), weeks=[1,2,3,4];
 weeks.forEach(w=>{let o=document.createElement("option");o.value=w;o.textContent="Semaine "+w;$("week").appendChild(o)});
 $("week").onchange=fillSessions;$("session").onchange=show;
@@ -108,13 +121,20 @@ $("doneBtn").onclick=()=>{let id=+$("session").value;if(!state.done.includes(id)
 $("resetBtn").onclick=()=>{let id=+$("session").value;state.done=state.done.filter(x=>x!==id);save();render()};
 $("score").oninput=()=>{state.score=$("score").value;save();render()};
 $("notes").oninput=()=>{state.notes=$("notes").value;save()};
+$("session-performance").oninput=saveSessionDetails;$("session-comments").oninput=saveSessionDetails;
+function saveSessionDetails(){
+  const input=$("session-performance"), performance=input.value===""?null:Number(input.value);
+  if(!input.checkValidity() || (performance!==null&&!Number.isInteger(performance))){storageMessage("Saisissez un nombre entier entre 0 et 10000.");return}
+  state.sessions ||= {};state.sessions[$("session").value]={performance,comments:$("session-comments").value};save();
+}
 function storageMessage(message){$("storageStatus").textContent=message}
 function lockStorage(message){
   loaded.ok=false;
-  ["doneBtn","resetBtn","score","notes"].forEach(id=>$(id).disabled=true);
+  ["doneBtn","resetBtn","score","notes","session-performance","session-comments"].forEach(id=>$(id).disabled=true);
   storageMessage(message);
 }
 function save(){
+  if(accountAdapter)return accountAdapter.save(state);
   if(!loaded.ok)return false;
   try {
     if(localStorage.getItem(STORAGE_KEY)!==loaded.raw){
@@ -129,6 +149,7 @@ function save(){
   }
 }
 function exportLocalData(){
+  if(accountAdapter){accountAdapter.export();return}
   let url,link;
   try {
     // Lecture au clic uniquement ; raw conserve aussi un JSON ancien ou invalide à l'identique.
@@ -146,15 +167,25 @@ function exportLocalData(){
 }
 function fillSessions(){ $("session").innerHTML="";S.filter(x=>x[0]==+$("week").value).forEach(x=>{let o=document.createElement("option");o.value=x[1];o.textContent="Séance "+x[1];$("session").appendChild(o)});show()}
 function cur(){return S.find(x=>x[1]==+$("session").value)}
-function show(){let x=cur();$("detail").innerHTML=`<div class="week w${x[0]}"><h3>Semaine ${x[0]} · Séance ${x[1]}</h3><div class="exercise"><b>Tractions sans aide</b>${x[2]}</div><div class="exercise"><b>Tractions avec élastique</b>${x[3]}</div><div class="exercise"><b>Descentes lentes</b>${x[4]}</div><div class="exercise"><b>Autres exercices</b>${x[5]}</div><p><b>Durée :</b> ${x[6]}</p></div>`}
+function show(){let x=cur();$("detail").innerHTML=`<div class="week w${x[0]}"><h3>Semaine ${x[0]} · Séance ${x[1]}</h3><div class="exercise"><b>Tractions sans aide</b>${x[2]}</div><div class="exercise"><b>Tractions avec élastique</b>${x[3]}</div><div class="exercise"><b>Descentes lentes</b>${x[4]}</div><div class="exercise"><b>Autres exercices</b>${x[5]}</div><p><b>Durée :</b> ${x[6]}</p></div>`;
+  const session=state.sessions?.[x[1]];$("session-performance").value=session?.performance??"";$("session-comments").value=session?.comments||"";
+}
 function selectS(w,s){$("week").value=w;fillSessions();$("session").value=s;show();scrollTo({top:0,behavior:"smooth"})}
 function render(){
-$("done").textContent=state.done.length;$("best").textContent=state.score||1;$("bar").style.width=(state.done.length/12*100)+"%";$("progressText").textContent=`${state.done.length}/12 séances terminées`;
+$("done").textContent=state.done.length;$("best").textContent=state.score===""?1:state.score;$("bar").style.width=(state.done.length/12*100)+"%";$("progressText").textContent=`${state.done.length}/12 séances terminées`;
 $("score").value=state.score;$("notes").value=state.notes;$("all").innerHTML="";
 weeks.forEach(w=>{let box=document.createElement("div");box.className="week w"+w;box.innerHTML=`<h3>Semaine ${w}</h3>`;S.filter(x=>x[0]==w).forEach(x=>{let d=document.createElement("div");d.className="session "+(state.done.includes(x[1])?"done":"");d.innerHTML=`<span><b>Séance ${x[1]}</b><br><span class="small">${x[2]} · ${x[6]}</span></span><button class="${state.done.includes(x[1])?"secondary":""}">${state.done.includes(x[1])?"✓ Faite":"Ouvrir"}</button>`;d.querySelector("button").onclick=()=>selectS(w,x[1]);box.appendChild(d)});$("all").appendChild(box)})}
 $("week").value=1;fillSessions();render();
 $("exportBtn").onclick=exportLocalData;
 if(!loaded.ok)lockStorage(loaded.message);
+// Le module connecté utilise les mêmes commandes et le même programme.
+window.trainingProgram={
+  useAccount(adapter,value){accountAdapter=adapter;state=value;["doneBtn","resetBtn","score","notes","session-performance","session-comments"].forEach(id=>$(id).disabled=false);render();show()},
+  update(value){state=value;render();show()},
+  useLegacy(){accountAdapter=null;loaded=readLocalData();state=loaded.ok?loaded.state:{done:[],score:"",notes:""};["doneBtn","resetBtn","score","notes","session-performance","session-comments"].forEach(id=>$(id).disabled=!loaded.ok);render();show();storageMessage(loaded.ok?"Suivi historique ouvert. Aucun résultat de compte n’y a été copié.":loaded.message)},
+  message:storageMessage
+};
 if("serviceWorker" in navigator) navigator.serviceWorker.register("sw.js").catch(()=>{});
 </script>
+<script type="module" src="js/program-account.js"></script>
 </body></html>

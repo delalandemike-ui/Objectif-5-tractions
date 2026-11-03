@@ -9,8 +9,8 @@ const output = join(root, process.env.PAGES_TEST_BUILD === '1' ? '.tools/pages-a
 // Liste fermée : aucun serveur, secret, test ou document personnel dans Pages.
 const files = [
   'index.html', 'athlete.html', 'coach.html', 'multisport.css', 'sw.js', 'manifest.webmanifest', 'icon.svg',
-  'js/auth.js', 'js/firebase-config.js', 'js/invitations.js', 'js/cloud.js',
-  'js/athlete-store.js', 'js/athlete-data.js', 'js/athlete-page.js',
+  'js/auth.js', 'js/firebase-config.js', 'js/invitations.js', 'js/cloud.js', 'js/messages.js',
+  'js/athlete-store.js', 'js/athlete-data.js', 'js/athlete-page.js', 'js/athlete-session.js', 'js/program-account.js',
   'js/coach-data.js', 'js/coach-page.js', 'js/coach-management.js'
 ];
 // Refus d'un dossier contenant des fichiers étrangers : aucun effacement automatique.

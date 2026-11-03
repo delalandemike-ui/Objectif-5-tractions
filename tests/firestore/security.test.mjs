@@ -22,7 +22,7 @@ const read = (database, path = progress) => getDoc(doc(database, path));
 before(async () => {
   env = await initializeTestEnvironment({ projectId, firestore: {
     host: '127.0.0.1', port: 8080,
-    rules: await readFile(new URL('../../firebase/firestore.rules', import.meta.url), 'utf8')
+    rules: await readFile(new URL(process.env.COACHING_RULES === '1' ? '../../firebase/firestore.coaching.rules' : '../../firebase/firestore.rules', import.meta.url), 'utf8')
   } });
 });
 beforeEach(async () => {
@@ -304,10 +304,11 @@ test('Spark : approbation atomique du coach obligatoire et résultats préexista
 });
 test('Spark : invitations annulées ou expirées et coach inactif refusés', async () => {
   const id = await pendingSpark(); await spark(sparkUser(), 'manageAccess', { action: 'cancel', id });
-  await assertFails(spark(sparkUser('charlie'), 'acceptInvitation', { id }));
+  await assert.rejects(spark(sparkUser('charlie'), 'acceptInvitation', { id }), { code: 'invitation/inactive' });
+  await assertFails(updateDoc(doc(db('charlie', { email: 'charlie@example.invalid' }), 'invitations', id), { status: 'requested', athleteUid: 'charlie', displayName: 'Charlie', requestedAt: serverTimestamp() }));
   const expired = await pendingSpark();
   await env.withSecurityRulesDisabled(async c => updateDoc(doc(c.firestore(), 'invitations', expired), { expiresAt: stamp }));
-  await assertFails(spark(sparkUser('charlie'), 'acceptInvitation', { id: expired }));
+  await assert.rejects(spark(sparkUser('charlie'), 'acceptInvitation', { id: expired }), { code: 'invitation/inactive' });
   const requested = await requestedSpark();
   await env.withSecurityRulesDisabled(async c => updateDoc(doc(c.firestore(), 'settings/access'), { active: false }));
   await assertFails(spark(sparkUser(), 'approveInvitation', { id: requested }));
@@ -319,7 +320,7 @@ test('Spark : révocation atomique, refus du rejeu et conservation des résultat
   await assertFails(updateDoc(doc(db('coach'), 'coaches/coach/athletes/charlie'), { status: 'revoked', revokedAt: serverTimestamp() }));
   await spark(sparkUser(), 'manageAccess', { action: 'revoke', id: 'charlie' });
   await assertFails(read(db('charlie'), 'athletes/charlie/programs/tractions-12-v1'));
-  await assertFails(spark(sparkUser('charlie'), 'acceptInvitation', { id }));
+  await assert.rejects(spark(sparkUser('charlie'), 'acceptInvitation', { id }), { code: 'invitation/inactive' });
   await assert.rejects(spark(sparkUser(), 'approveInvitation', { id }));
   await env.withSecurityRulesDisabled(async c => assertSucceeds(read(c.firestore(), 'athletes/charlie/programs/tractions-12-v1')));
 });

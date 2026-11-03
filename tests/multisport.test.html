@@ -92,50 +92,180 @@ await test('Transactions Firestore : création, révision et conflit sans écras
 await test('Compilation des modules Firestore et de gestion coach', async () => {
   for (const key of ['cloud','management']) await import(blob(decode(key).replace(/^import .*;\r?\n/gm,'')));
 });
-async function athleteUI() {
-  const frame = document.createElement('iframe'); document.body.append(frame);
-  const module = blob(decode('page')
-    .replace("import { authClient as auth } from './auth.js';", 'const auth = globalThis.fakeAuth;')
-    .replace("from './athlete-store.js'", `from '${storeUrl}'`)
-    .replace("import { createAthleteData } from './athlete-data.js';", 'const createAthleteData = () => globalThis.fakeData;')
-    .replace("import { accessAction } from './invitations.js';", 'const accessAction = async () => { throw Error("Service à configurer"); };'));
-  const setup = `<script>
-  const entries = new Map();
-  Object.defineProperty(window, 'localStorage', { value: { get length(){return entries.size}, key:i=>[...entries.keys()][i], getItem:key=>entries.get(key)??null, setItem:(key,value)=>entries.set(key,value) } });
-  window.fakeAuth = { signInWithPassword: async email=>({uid:email.startsWith('bob')?'bob':'alice',email,emailVerified:true}),signOut:async()=>{} };
-  window.fakeData = { exchange:async()=>{throw Error('Hors connexion simulé')} };
-  window.fetch=async()=>({ok:true,text:async()=>new TextDecoder().decode(Uint8Array.from(atob('${SOURCES.index}'),c=>c.charCodeAt(0)))});
-  Object.defineProperty(navigator,'serviceWorker',{value:undefined});
-  history.replaceState = () => {};
-  <\/script>`;
-  const html = decode('layout').replace('<script type="module" src="js/athlete-page.js"><\/script>', setup + `<script type="module" src="${module}"><\/script>`);
-  await new Promise(resolve => { frame.onload = resolve; frame.srcdoc = html; });
-  const $ = id => frame.contentDocument.getElementById(id);
-  for (let i = 0; i < 100 && $('training').options.length !== 12; i++) await new Promise(resolve => setTimeout(resolve, 10));
-  const login = async email => { $('email').value = email; $('password').value = 'fictif'; await $('login').onsubmit({preventDefault(){}}); };
-  return { frame, $, login, close:()=>frame.remove() };
+const sessionUrl = blob(decode('session').replace("import { createAuthClient } from './auth.js';", 'const createAuthClient = () => ({});').replace("import { cloud } from './cloud.js';", 'const cloud = () => { throw Error("Réseau interdit"); };'));
+const sessionModule = await import(sessionUrl);
+const {mountProgramAccount} = await import(blob(decode('program').replace("from './athlete-session.js'", `from '${sessionUrl}'`).replace("from './athlete-store.js'", `from '${storeUrl}'`).replace("import { createAthleteData } from './athlete-data.js';", 'const createAthleteData = () => ({});').replace("import { mountMessages } from './messages.js';",'const mountMessages=()=>()=>{};')));
+const {mountAthleteAccount} = await import(blob(decode('page').replace("from './athlete-session.js'", `from '${sessionUrl}'`).replace("import { accessAction } from './invitations.js';", 'const accessAction = () => { throw Error("Réseau interdit"); };')));
+const user = {uid:'alice',email:'alice@example.invalid',emailVerified:true};
+const tick = () => new Promise(resolve=>setTimeout(resolve,0));
+async function fixture(kind='program', {selected='alice', online=false, seeds={}}={}) {
+  const frame=document.createElement('iframe');document.body.append(frame);
+  const setup=`<script>
+    const entries=new Map(Object.entries(${JSON.stringify(seeds)}));
+    Object.defineProperty(window,'localStorage',{value:{get length(){return entries.size},key:i=>[...entries.keys()][i],getItem:k=>entries.get(k)??null,setItem:(k,v)=>entries.set(k,v)}});
+    Object.defineProperty(navigator,'onLine',{value:${online},configurable:true});
+    Object.defineProperty(navigator,'serviceWorker',{value:undefined});
+    window.confirm=()=>true;
+    <\/script>`;
+  const source=decode(kind==='program'?'index':'layout').replace(/<script type="module"[^>]*><\/script>/g,'').replace(/<link[^>]*>/g,'').replace('<head>','<head><base href="https://example.invalid/app/">'+setup);
+  await new Promise(resolve=>{frame.onload=resolve;frame.srcdoc=source});
+  const doc=frame.contentDocument,$=id=>doc.getElementById(id),storage=frame.contentWindow.localStorage;
+  let selectedId=selected,changed,authCalls=0,admissions=0,writes=0,navigated;
+  const authentication={async observe(cb){authCalls++;changed=cb;cb(null);return ()=>{}},async signInWithPassword(){return user},async refreshIdentity(){return user},async signOut(){changed?.(null)}};
+  const remote={async exchange(uid,id,sent){if(sent?.dirty){writes++;return {revision:(sent.base||0)+1}}return {remote:{value:null,revision:0}}}};
+  const options={authentication,remote,admission:async()=>{admissions++},selection:{read:()=>selectedId?{uid:selectedId}:null,write:id=>selectedId=id},storage};
+  const controller=kind==='program'?mountProgramAccount(doc,frame.contentWindow.trainingProgram,options):mountAthleteAccount(doc,{authentication,admission:options.admission,remember:()=>{},storage,select:id=>selectedId=id,navigate:url=>navigated=url});
+  return {frame,doc,$,storage,options,controller,get authCalls(){return authCalls},get admissions(){return admissions},get writes(){return writes},get navigated(){return navigated},get selected(){return selectedId},connect:()=>changed(user),online(value){Object.defineProperty(frame.contentWindow.navigator,'onLine',{value,configurable:true})},close(){this.controller.dispose();frame.remove()}};
 }
-await test('Interface sportif : douze séances, performances zéro et commentaires sauvegardés', async () => {
-  const f = await athleteUI(); try {
-    assert(f.$('training').options.length === 12, 'Séances non chargées');
-    await f.login('alice@example.invalid'); assert(!f.$('workspace').hidden && f.$('password').value === '', 'Connexion ou secret');
-    f.$('training').value = '12'; f.$('training').onchange();
-    assert(f.$('exercises').textContent.includes('TEST : 5'), 'Contenu séance absent');
-    f.$('performance').value = '0'; f.$('comments').value = 'Élastique léger'; f.$('completed').checked = true;
-    await f.$('save-session').onclick();
-    const state = JSON.parse(f.frame.contentWindow.localStorage.getItem('tractions-athlete-v1:alice'));
-    assert(state.documents['12'].value.performance === 0 && state.documents['12'].value.completed && state.documents['12'].value.comments === 'Élastique léger', 'Résultat perdu');
-  } finally { f.close(); }
+await test('Programme connecté : mêmes 12 séances, zéro et commentaires conservés ; historique intact',async()=>{
+  const legacy=JSON.stringify({done:[2],score:'3',notes:'historique',extra:42});
+  const f=await fixture('program',{seeds:{'tractions-v2':legacy}});try{
+    assert(f.doc.querySelectorAll('#all .session').length===12&&!f.authCalls,'programme ou réseau hors connexion');
+    f.frame.contentWindow.selectS(4,12);assert(f.$('detail').textContent.includes('TEST : 5'),'exercices');
+    f.$('session-performance').value='0';f.$('session-performance').oninput();f.$('session-comments').value='Élastique léger';f.$('session-comments').oninput();f.$('doneBtn').click();
+    const rows=JSON.parse(f.storage.getItem('tractions-athlete-v1:alice')).documents;
+    assert(rows['12'].value.performance===0&&rows['12'].value.comments==='Élastique léger'&&rows['12'].value.completed,'saisie');
+    assert(f.$('done').textContent==='1'&&f.storage.getItem('tractions-v2')===legacy,'progression ou historique');
+    f.$('resetBtn').click();assert(!JSON.parse(f.storage.getItem('tractions-athlete-v1:alice')).documents['12'].value.completed,'réinitialisation');
+  }finally{f.close()}
 });
-await test('Interface sportif : changement de compte, reprise locale et file après erreur réseau', async () => {
-  const f = await athleteUI(); try {
-    await f.login('alice@example.invalid'); f.$('athlete-notes').value = 'notes Alice'; await f.$('save-program').onclick();
-    await f.$('logout').onclick(); assert(f.$('workspace').hidden, 'Résultats affichés après fermeture');
-    await f.login('bob@example.invalid'); assert(f.$('athlete-notes').value === '', 'Données Alice visibles à Bob');
-    await f.$('logout').onclick();
-    f.$('local-accounts').value = 'alice'; await f.$('resume').onclick();
-    assert(f.$('athlete-notes').value === 'notes Alice' && f.$('progress').textContent.includes('1 modification'), 'Reprise locale perdue');
-  } finally { f.close(); }
+await test('Programme : ancien compte relu hors connexion et retour à l’historique sans fusion',async()=>{
+  const local=storage(),alice=createAthleteStore('alice',local);alice.edit('1',{...emptySession(),completed:true,performance:4,comments:'ancien compte'});
+  const legacy=JSON.stringify({done:[2,3],score:'0',notes:'local'});
+  const f=await fixture('program',{seeds:{...Object.fromEntries(local.map),'tractions-v2':legacy}});try{
+    assert(f.$('done').textContent==='1'&&f.$('session-comments').value==='ancien compte','reprise compte');
+    await f.$('account-close').onclick();assert(f.$('done').textContent==='2'&&f.$('notes').value==='local'&&f.$('best').textContent==='0','retour historique');
+    assert(f.storage.getItem('tractions-v2')===legacy&&f.storage.getItem('tractions-athlete-v1:alice'),'conservation');
+  }finally{f.close()}
+});
+await test('Synchronisation : admission requise, résultats du programme transmis au même compte',async()=>{
+  const f=await fixture('program',{online:true});try{
+    f.$('notes').value='notes Alice';f.$('notes').oninput();f.$('doneBtn').click();
+    f.connect();await tick();
+    assert(f.admissions===1&&f.writes===2,'admission ou écritures');
+    const rows=JSON.parse(f.storage.getItem('tractions-athlete-v1:alice')).documents;
+    assert(!rows.program.dirty&&!rows['1'].dirty&&f.$('done').textContent==='1','synchronisation');
+  }finally{f.close()}
+});
+await test('Synchronisation refusée : aucune écriture, file locale et interface utilisable',async()=>{
+  const f=await fixture('program',{online:true});try{
+    f.$('doneBtn').click();f.options.admission=async()=>{};
+    // Remonter avec un serveur refusant l’admission.
+    f.controller.dispose();
+    f.controller=mountProgramAccount(f.doc,f.frame.contentWindow.trainingProgram,{...f.options,admission:async()=>{throw {code:'permission-denied'}}});
+    f.connect();await tick();
+    assert(!f.writes&&JSON.parse(f.storage.getItem('tractions-athlete-v1:alice')).documents['1'].dirty,'écriture non autorisée');
+    assert(f.$('account-status').textContent.includes('Admission non confirmée')&&!f.$('doneBtn').disabled&&!f.$('account-sync').disabled,'récupération');
+  }finally{f.close()}
+});
+await test('Synchronisation : données serveur reflétées dans progression, notes et séance ; conflit conservé',async()=>{
+  const f=await fixture('program',{online:true});try{
+    f.controller.dispose();
+    const remote={async exchange(uid,id,sent){if(sent?.dirty)return {conflict:true,remote:{value:{...emptyProgram(),notes:'serveur'},revision:3}};return {remote:{value:id==='program'?{...emptyProgram(),score:0,notes:'serveur'}:id==='1'?{...emptySession(),completed:true,performance:7,comments:'coach visible'}:null,revision:3}}}};
+    f.controller=mountProgramAccount(f.doc,f.frame.contentWindow.trainingProgram,{...f.options,remote});f.connect();await tick();
+    assert(f.$('done').textContent==='1'&&f.$('notes').value==='serveur'&&f.$('session-performance').value==='7'&&f.$('session-comments').value==='coach visible','affichage distant');
+    f.$('notes').value='local';f.$('notes').oninput();await f.controller.synchronize();
+    assert(f.$('notes').value==='local'&&f.$('account-conflicts').textContent.includes('serveur'),'conflit perdu');
+    f.$('account-conflicts').querySelectorAll('button')[1].click();assert(f.$('notes').value==='serveur','choix serveur');
+  }finally{f.close()}
+});
+await test('Import explicite : performances historiques préservées, aucun import au démarrage',async()=>{
+  const legacy=JSON.stringify({done:[12],score:'0',notes:'ancien',sessions:{12:{performance:5,comments:'test'}}});
+  const f=await fixture('program',{seeds:{'tractions-v2':legacy}});try{
+    assert(!f.storage.getItem('tractions-athlete-v1:alice'),'import automatique');
+    f.$('account-import').click();assert(f.$('done').textContent==='1'&&f.$('notes').value==='ancien','import');
+    f.frame.contentWindow.selectS(4,12);assert(f.$('session-performance').value==='5'&&f.$('session-comments').value==='test','résultats historiques');
+    assert(f.storage.getItem('tractions-v2')===legacy,'original');
+    const before=f.storage.getItem('tractions-athlete-v1:alice');f.$('account-import').click();assert(f.storage.getItem('tractions-athlete-v1:alice')===before,'second import');
+  }finally{f.close()}
+});
+await test('Compte : aucune séance dupliquée, admission puis redirection vers index',async()=>{
+  const f=await fixture('account',{online:true});try{
+    assert(!f.$('training')&&!f.$('save-session')&&!f.$('workspace'),'double interface');
+    f.$('email').value=user.email;f.$('password').value='fictif';await f.$('login').onsubmit({preventDefault(){}});
+    assert(f.admissions===1&&f.selected==='alice'&&f.navigated==='https://example.invalid/app/index.html'&&f.$('password').value==='','redirection');
+  }finally{f.close()}
+});
+await test('Session : persistance sportive durable, coach en mémoire et vérification serveur sans écriture',async()=>{
+  const {createAuthClient}=await import(blob(decode('auth')));let selected;
+  const sdk={inMemoryPersistence:{},browserLocalPersistence:{},initializeAuth:(app,options)=>{selected=options.persistence;return {}},sendSignInLinkToEmail(){},isSignInWithEmailLink(){},signInWithEmailLink(){},signOut(){},onAuthStateChanged(){}};
+  await createAuthClient({load:async()=>({sdk,app:{}}),persistence:'local'}).initialize();assert(selected===sdk.browserLocalPersistence,'persistance sportive');
+  await createAuthClient({load:async()=>({sdk,app:{}})}).initialize();assert(selected===sdk.inMemoryPersistence,'coach modifié');
+  let path;await sessionModule.checkAdmission(user,async()=>({db:{},sdk:{doc:(db,...parts)=>(path=parts.join('/')),getDocFromServer:async()=>({exists:()=>true,data:()=>({enrolled:true})})}}));assert(path==='athletes/alice','admission');
+});
+await test('Compte non admis : pas de redirection, statut clair et commandes réutilisables',async()=>{
+  const f=await fixture('account',{online:true});try{
+    f.controller.dispose();
+    f.controller=mountAthleteAccount(f.doc,{authentication:f.options.authentication,remember:()=>{},storage:f.storage,access:async()=>({invitations:[{status:'requested',athleteUid:'alice',email:user.email,expiresAt:{toMillis:()=>Date.now()+86400000}}]}),select:()=>{},navigate:()=>{throw Error('Redirection interdite')},admission:async()=>{throw {code:'permission-denied'}}});
+    f.$('email').value=user.email;f.$('password').value='fictif';await f.$('login').onsubmit({preventDefault(){}});
+    assert(f.$('status').textContent.includes('en attente de validation du coach')&&!f.$('logout').disabled&&!f.navigated,'attente');
+  }finally{f.close()}
+});
+await test('Changement de compte : mêmes commandes, résultats séparés et reprise immédiate',async()=>{
+  const local=storage(),bob=createAthleteStore('bob',local);bob.edit('program',{...emptyProgram(),notes:'notes Bob'});
+  const f=await fixture('program',{seeds:Object.fromEntries(local.map)});try{
+    f.$('notes').value='notes Alice';f.$('notes').oninput();
+    f.$('account-local').value='bob';f.$('account-resume').click();assert(f.$('notes').value==='notes Bob','fuite Alice vers Bob');
+    f.$('account-local').value='alice';f.$('account-resume').click();assert(f.$('notes').value==='notes Alice','reprise Alice');
+    assert(!f.storage.getItem('tractions-v2'),'historique remplacé');
+  }finally{f.close()}
+});
+await test('Annulation : une lecture tardive ne modifie pas le compte après fermeture',async()=>{
+  const alice=createAthleteStore('alice',storage()),abort=new AbortController();let finish;
+  const work=alice.sync({exchange:()=>new Promise(resolve=>finish=resolve)},{signal:abort.signal});
+  abort.abort();finish({remote:{value:{...emptyProgram(),notes:'tardif'},revision:1}});await work;
+  assert(!alice.read().documents.program,'réponse tardive appliquée');
+  try{await sessionModule.bounded(()=>new Promise(()=>{}),5);throw Error('succès inattendu')}catch(e){assert(e.code==='athlete/timeout','délai')}
+});
+await test('Inscription : formulaire unique, vérification obligatoire puis demande automatique',async()=>{
+ const f=await fixture('account',{online:true});try{
+  f.controller.dispose();let current={...user,emailVerified:false,displayName:'Nouveau'},registrations=0,requests=0;
+  const authentication={...f.options.authentication,async register(email,password,options){registrations++;assert(options.displayName==='Nouveau'&&password==='fictif-123','inscription');return current},async refreshIdentity(){return current}};
+  f.controller=mountAthleteAccount(f.doc,{authentication,storage:f.storage,remember:()=>{},select:()=>{},admission:async()=>{throw {code:'athlete/not-admitted'}},access:async(u,action,input)=>{
+   if(action==='acceptInvitation'){requests++;assert(input.id==='personal'&&input.displayName==='Nouveau','association');return}
+   return {invitations:[{id:'personal',email:user.email,status:'pending',expiresAt:{toMillis:()=>Date.now()+86400000}}]};
+  }});
+  f.$('mode-toggle').onclick({preventDefault(){}});assert(!f.$('pseudo-label').hidden&&f.$('submit').textContent==='Créer mon compte','formulaire');
+  f.$('display-name').value='Nouveau';f.$('email').value=user.email;f.$('password').value='fictif-123';await f.$('login').onsubmit({preventDefault(){}});
+  assert(registrations===1&&!requests&&f.$('status').textContent.includes('Confirmez votre adresse'),'vérification contournée');
+  current={...current,emailVerified:true};await f.controller.refresh();
+  assert(requests===1&&f.$('status').textContent==='Inscription enregistrée — en attente de validation du coach'&&!f.$('accept'),'demande automatique');
+ }finally{f.close()}
+});
+await test('Statuts : demande refusée et accès révoqué bloquent la redirection',async()=>{
+ for(const [status,text] of [['cancelled','pas été acceptée'],['accepted','révoqué']]){
+  const f=await fixture('account',{online:true});try{
+   f.controller.dispose();let redirected=false;
+   f.controller=mountAthleteAccount(f.doc,{authentication:f.options.authentication,storage:f.storage,remember:()=>{},select:()=>{},navigate:()=>redirected=true,admission:async()=>{throw {code:'athlete/not-admitted'}},access:async()=>({invitations:[{email:user.email,status}]})});
+   f.$('email').value=user.email;f.$('password').value='fictif';await f.$('login').onsubmit({preventDefault(){}});
+   assert(!redirected&&f.$('status').textContent.includes(text),'statut '+status);
+  }finally{f.close()}
+ }
+});
+await test('Messages : texte privé, reprise sans doublon après délai et confirmation d’envoi',async()=>{
+ const {mountMessages}=await import(blob(decode('messages').replace("import { cloud } from './cloud.js';",'const cloud=()=>{throw Error("Réseau interdit")};').replace("from './athlete-session.js'",`from '${sessionUrl}'`)));
+ const root=document.createElement('div');document.body.append(root);let ids=[],attempt=0,stop;
+ try{
+  stop=mountMessages(root,{user,uid:'alice',client:{async list(){return {messages:[{senderUid:'coach-secret-uid',text:'<img src=x>',createdAt:{toMillis:()=>1700000000000}}]}},async send(u,uid,text,id){ids.push(id);if(!attempt++)throw Error('timeout')}}});await tick();
+  assert(!root.querySelector('img')&&!root.textContent.includes('coach-secret-uid'),'injection ou identifiant');
+  const input=root.querySelector('textarea'),send=[...root.querySelectorAll('button')].find(button=>button.textContent==='Envoyer');input.value='Ma réponse';await send.onclick();
+  assert(input.value==='Ma réponse'&&!send.disabled,'texte perdu');await send.onclick();assert(ids.length===2&&ids[0]===ids[1]&&input.value==='','reprise');
+ }finally{stop?.();root.remove()}
+});
+await test('Auth : pseudo conservé et retour de vérification lié à l’invitation, aucun secret exposé',async()=>{
+ const {createAuthClient}=await import(blob(decode('auth')));let destination;
+ const raw={uid:'test',email:user.email,emailVerified:false},sdk={inMemoryPersistence:{},initializeAuth:()=>({}),sendSignInLinkToEmail(){},isSignInWithEmailLink(){},signInWithEmailLink(){},signOut(){},onAuthStateChanged(){},async createUserWithEmailAndPassword(){return {user:raw}},async updateProfile(u,profile){Object.assign(u,profile)},async sendEmailVerification(u,options){destination=options.url}};
+ const client=createAuthClient({load:async()=>({sdk,app:{}})}),created=await client.register(user.email,'fictif-123',{displayName:'Pseudo',invitationId:'personal'});
+ assert(created.displayName==='Pseudo'&&new URL(destination).searchParams.get('invitation')==='personal'&&!('password' in created),'profil ou retour');
+});
+await test('Session partagée entre onglets : changement de compte sans mélange, déconnexion sans perte',async()=>{
+ const local=storage();for(const uid of ['alice','bob'])createAthleteStore(uid,local).edit('program',{...emptyProgram(),notes:uid});
+ const legacy=JSON.stringify({done:[2],score:'1',notes:'historique'}),f=await fixture('program',{seeds:{...Object.fromEntries(local.map),'tractions-v2':legacy}});
+ try{
+  f.options.selection.write('bob');f.frame.contentWindow.dispatchEvent(new StorageEvent('storage',{key:'tractions-active-athlete-v1'}));assert(f.$('notes').value==='bob','changement ignoré');
+  f.options.selection.write(null);f.frame.contentWindow.dispatchEvent(new StorageEvent('storage',{key:'tractions-active-athlete-v1'}));assert(f.$('notes').value==='historique'&&f.storage.getItem('tractions-v2')===legacy,'déconnexion');
+  assert(JSON.parse(f.storage.getItem('tractions-athlete-v1:alice')).documents.program.value.notes==='alice','Alice écrasée');
+ }finally{f.close()}
 });
 urls.forEach(url => URL.revokeObjectURL(url));
 document.getElementById('results').textContent = results.join('\n') + '\n' + (results.some(row => row.startsWith('FAIL')) ? 'FAILED' : 'ALL PASSED');
